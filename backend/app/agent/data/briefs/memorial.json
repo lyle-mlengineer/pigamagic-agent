@@ -1,0 +1,14 @@
+{
+  "shoot_id": "golden-memorial",
+  "title": "Remembering Grace",
+  "event": "memorial",
+  "venue_name": "All Saints Chapel",
+  "activities": [
+    "arrivals",
+    "eulogy",
+    "candle lighting"
+  ],
+  "story": "A gentle gathering to remember Grace with her family.",
+  "style_preset": "candid-documentary",
+  "shot_count": 6
+}

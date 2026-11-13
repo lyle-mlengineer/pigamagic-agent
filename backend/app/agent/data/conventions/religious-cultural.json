@@ -1,0 +1,46 @@
+{
+  "event_key": "religious-cultural",
+  "display_name": "Religious or cultural ceremony",
+  "phases": ["preparation", "ceremony", "celebration"],
+  "canonical_moments": [
+    "preparation and dressing",
+    "arriving at the place of ceremony",
+    "the ceremony itself",
+    "family blessing",
+    "procession",
+    "greeting elders",
+    "shared meal",
+    "group photographs",
+    "celebration afterwards"
+  ],
+  "lighting_notes": [
+    "defer to the venue's ambient light and any candlelight or oil lamps",
+    "avoid flash where it would be disrespectful to the ceremony",
+    "keep colour faithful to garments and textiles rather than stylised"
+  ],
+  "composition_taboos": [
+    "inventing ritual actions that the brief did not describe",
+    "misrepresenting an order of events the user did not state",
+    "photographing the inside of a sacred space in a way the user did not describe"
+  ],
+  "wardrobe_expectations": "traditional or ceremonial dress as described in the brief; do not invent garments",
+  "typical_activities": [
+    "attending the ceremony",
+    "receiving a blessing",
+    "greeting elders",
+    "sharing a meal",
+    "posing with family in traditional dress"
+  ],
+  "emotion_notes": [
+    "reverence",
+    "family pride",
+    "joy of gathering"
+  ],
+  "sensitive_handling": [
+    "conservative mode: do not invent ritual content; follow the brief closely",
+    "only depict the ceremony elements the user explicitly described",
+    "avoid asserting the specific religion or denomination",
+    "keep sacred interiors generic unless the venue was researched",
+    "when unsure, favour the gathering and the people over the ritual"
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "event_key": "reunion",
+  "display_name": "Reunion",
+  "phases": [
+    "arrival",
+    "greetings",
+    "group portraits",
+    "catching up"
+  ],
+  "canonical_moments": [
+    "arriving",
+    "first greetings and hugs",
+    "group portrait",
+    "old friends laughing",
+    "sharing food",
+    "walking together",
+    "group photo by age or era"
+  ],
+  "lighting_notes": [
+    "even natural light for large group portraits",
+    "warm ambient light for catch-ups"
+  ],
+  "composition_taboos": [
+    "cutting the edges off a large group portrait",
+    "shooting a group portrait into direct sun"
+  ],
+  "wardrobe_expectations": "casual to smart-casual",
+  "typical_activities": [
+    "greeting",
+    "hugging",
+    "posing for a group photo",
+    "eating together",
+    "reminiscing"
+  ],
+  "emotion_notes": [
+    "nostalgia",
+    "affection",
+    "surprise at changes"
+  ],
+  "sensitive_handling": [
+    "depict the group honestly across ages and generations"
+  ]
+}

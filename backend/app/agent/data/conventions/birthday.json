@@ -1,0 +1,42 @@
+{
+  "event_key": "birthday",
+  "display_name": "Birthday",
+  "phases": ["arrival", "celebration", "cake", "aftermath"],
+  "canonical_moments": [
+    "arriving and greeting guests",
+    "opening gifts",
+    "the cake with candles",
+    "blowing out candles",
+    "singing",
+    "cutting the cake",
+    "group photo",
+    "playing games",
+    "dancing",
+    "candid laughter"
+  ],
+  "lighting_notes": [
+    "candlelight is the emotional centre; keep faces lit rather than silhouetted",
+    "avoid on-camera flash into a dark room if ambient light is usable"
+  ],
+  "composition_taboos": [
+    "shooting the cake with a blown-out background",
+    "missing the moment the candles are blown out"
+  ],
+  "wardrobe_expectations": "casual to festive, depending on the setting; children in party clothes",
+  "typical_activities": [
+    "blowing out candles",
+    "cutting the cake",
+    "opening gifts",
+    "singing",
+    "dancing",
+    "group photo"
+  ],
+  "emotion_notes": [
+    "delight",
+    "surprise",
+    "shared laughter"
+  ],
+  "sensitive_handling": [
+    "children must be photographed in ordinary, family-appropriate contexts only"
+  ]
+}

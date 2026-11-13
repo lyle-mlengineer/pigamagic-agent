@@ -1,0 +1,16 @@
+{
+  "shoot_id": "golden-road-trip",
+  "title": "Three days to the coast",
+  "event": "road-trip",
+  "venue_name": "Nairobi to Diani, via Voi",
+  "activities": [
+    "loading the car",
+    "windows down on a highway",
+    "roadside stop",
+    "eating snacks at a stop",
+    "arriving at the coast"
+  ],
+  "story": "Two friends, one small car, and a playlist nobody agreed on.",
+  "style_preset": "warm-celebration",
+  "shot_count": 8
+}

@@ -1,0 +1,39 @@
+{
+  "event_key": "anniversary",
+  "display_name": "Anniversary",
+  "phases": [
+    "gathering",
+    "dinner",
+    "celebration"
+  ],
+  "canonical_moments": [
+    "arriving",
+    "greeting family",
+    "seated together",
+    "cutting a cake",
+    "a toast",
+    "dancing",
+    "group photo across generations"
+  ],
+  "lighting_notes": [
+    "warm, intimate interior light",
+    "candlelight without silhouetting faces"
+  ],
+  "composition_taboos": [
+    "excluding older relatives from group photos",
+    "harsh flash in an intimate setting"
+  ],
+  "wardrobe_expectations": "smart-casual to formal depending on the setting",
+  "typical_activities": [
+    "toasting",
+    "cutting cake",
+    "dancing",
+    "posing with family"
+  ],
+  "emotion_notes": [
+    "affection",
+    "nostalgia",
+    "pride"
+  ],
+  "sensitive_handling": []
+}

@@ -1,0 +1,42 @@
+{
+  "event_key": "road-trip",
+  "display_name": "Road trip",
+  "phases": ["departure", "the road", "stops", "arrival"],
+  "canonical_moments": [
+    "loading the car",
+    "setting off",
+    "a view from the passenger seat",
+    "roadside stop",
+    "fuel station snacks",
+    "windows down on a highway",
+    "a lookout or viewpoint",
+    "arriving somewhere new",
+    "candid in the car"
+  ],
+  "lighting_notes": [
+    "golden hour across open road is the signature light",
+    "inside the car, favour window light and avoid flash reflections",
+    "blue-hour city arrival can be cinematic"
+  ],
+  "composition_taboos": [
+    "shooting from an unsafe moving position that implies a driver distracted from the road",
+    "flat midday light on a bland roadside"
+  ],
+  "wardrobe_expectations": "casual: road-trip layers, sunglasses, comfortable shoes",
+  "typical_activities": [
+    "driving",
+    "looking at a view",
+    "laughing in the car",
+    "eating snacks at a stop",
+    "posing beside the car",
+    "walking to a lookout"
+  ],
+  "emotion_notes": [
+    "freedom",
+    "boredom turning into laughter",
+    "awe at the landscape"
+  ],
+  "sensitive_handling": [
+    "never depict a driver looking at the camera while the vehicle is moving"
+  ]
+}

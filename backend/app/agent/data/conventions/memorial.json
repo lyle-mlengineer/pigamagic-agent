@@ -1,0 +1,44 @@
+{
+  "event_key": "memorial",
+  "display_name": "Memorial or funeral",
+  "phases": ["gathering", "service", "remembrance", "afterwards"],
+  "canonical_moments": [
+    "arriving at the venue",
+    "greeting family",
+    "seated during the service",
+    "speaking in remembrance",
+    "comforting one another",
+    "flowers and candles",
+    "quiet moments together",
+    "gathering afterwards"
+  ],
+  "lighting_notes": [
+    "soft, natural light; avoid harsh flash and high-contrast drama",
+    "interiors are often dim: lift gently rather than brightening to cheer",
+    "muted colour palette"
+  ],
+  "composition_taboos": [
+    "photographing grief in close-up without dignity",
+    "bright, celebratory framing",
+    "candids of someone in visible distress"
+  ],
+  "wardrobe_expectations": "typically dark or muted formal wear; defer to any cultural instruction in the brief",
+  "typical_activities": [
+    "greeting guests",
+    "listening during the service",
+    "speaking",
+    "comforting a relative",
+    "standing together quietly"
+  ],
+  "emotion_notes": [
+    "restraint",
+    "warmth toward family",
+    "quiet dignity"
+  ],
+  "sensitive_handling": [
+    "conservative mode: no invented ritual detail, no fabricated grief",
+    "keep the venue generic unless it was researched",
+    "prefer distance and dignity over emotional close-ups",
+    "if the brief is ambiguous, depict the gathering rather than the sorrow"
+  ]
+}

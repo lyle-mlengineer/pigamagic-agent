@@ -1,0 +1,34 @@
+{
+  "event_key": "generic",
+  "display_name": "Celebration",
+  "phases": ["arrival", "main", "afterwards"],
+  "canonical_moments": [
+    "arriving at the venue",
+    "greeting one another",
+    "the main event",
+    "candid conversation",
+    "group photograph",
+    "departing"
+  ],
+  "lighting_notes": [
+    "use available light and keep faces out of harsh shadows",
+    "prefer soft, natural light where the venue allows"
+  ],
+  "composition_taboos": [
+    "cluttered, distracting backgrounds behind portraits",
+    "cropping people out of a group photograph"
+  ],
+  "wardrobe_expectations": "as described in the brief; do not invent garments",
+  "typical_activities": [
+    "greeting guests",
+    "conversing",
+    "posing for a group photograph"
+  ],
+  "emotion_notes": [
+    "warmth",
+    "shared occasion"
+  ],
+  "sensitive_handling": [
+    "this is a fallback pack: stay close to the user's brief and avoid inventing specific ritual detail"
+  ]
+}

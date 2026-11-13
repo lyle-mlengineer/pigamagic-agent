@@ -1,0 +1,39 @@
+{
+  "event_key": "engagement",
+  "display_name": "Engagement",
+  "phases": [
+    "arrival",
+    "celebration",
+    "portraits"
+  ],
+  "canonical_moments": [
+    "arriving together",
+    "the ring being shown",
+    "close portraits of the couple",
+    "greeting family",
+    "toast",
+    "group photo",
+    "candid laughter"
+  ],
+  "lighting_notes": [
+    "golden hour flatters couple portraits",
+    "warm interior light for the celebration"
+  ],
+  "composition_taboos": [
+    "hiding the ring hand",
+    "busy background behind a couple portrait"
+  ],
+  "wardrobe_expectations": "smart-casual to formal, often coordinated between the couple",
+  "typical_activities": [
+    "showing the ring",
+    "posing as a couple",
+    "toasting",
+    "greeting guests"
+  ],
+  "emotion_notes": [
+    "joy",
+    "tenderness",
+    "excitement"
+  ],
+  "sensitive_handling": []
+}

@@ -1,0 +1,41 @@
+{
+  "event_key": "farewell",
+  "display_name": "Farewell or send-off",
+  "phases": [
+    "gathering",
+    "speeches",
+    "goodbyes"
+  ],
+  "canonical_moments": [
+    "arriving",
+    "greeting",
+    "speeches",
+    "group photo",
+    "embraces",
+    "walking away or departing",
+    "waving goodbye"
+  ],
+  "lighting_notes": [
+    "warm, gentle light suits the mood",
+    "dusk or golden hour for the departure"
+  ],
+  "composition_taboos": [
+    "bright celebratory framing",
+    "candids of someone crying in close-up"
+  ],
+  "wardrobe_expectations": "casual to smart-casual",
+  "typical_activities": [
+    "giving a speech",
+    "embracing",
+    "posing for a group photo",
+    "waving goodbye"
+  ],
+  "emotion_notes": [
+    "bittersweet warmth",
+    "affection",
+    "hope"
+  ],
+  "sensitive_handling": [
+    "prefer dignity over overt sadness"
+  ]
+}

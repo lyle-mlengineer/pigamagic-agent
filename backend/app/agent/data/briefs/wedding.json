@@ -1,0 +1,15 @@
+{
+  "shoot_id": "golden-wedding",
+  "title": "Ada & Sam",
+  "event": "wedding",
+  "venue_name": "The Sarova Stanley",
+  "activities": [
+    "getting ready",
+    "exchanging vows",
+    "cutting the cake",
+    "first dance"
+  ],
+  "story": "A quiet morning ceremony that turned into a loud, happy party.",
+  "style_preset": "editorial",
+  "shot_count": 10
+}

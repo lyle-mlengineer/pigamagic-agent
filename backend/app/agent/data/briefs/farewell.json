@@ -1,0 +1,16 @@
+{
+  "shoot_id": "golden-farewell",
+  "title": "Saying goodbye to Otieno",
+  "event": "farewell",
+  "venue_name": "The Kaya, Kilimani",
+  "activities": [
+    "greeting",
+    "speeches",
+    "group photo",
+    "embracing",
+    "waving goodbye"
+  ],
+  "story": "He is leaving for a job in Kigali. Nobody wants to say it out loud.",
+  "style_preset": "candid-documentary",
+  "shot_count": 7
+}

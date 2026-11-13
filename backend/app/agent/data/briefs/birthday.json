@@ -1,0 +1,15 @@
+{
+  "shoot_id": "golden-birthday",
+  "title": "Maya turns forty",
+  "event": "birthday",
+  "venue_name": "The Alchemist Rooftop",
+  "activities": [
+    "arrivals",
+    "cutting the cake",
+    "speeches",
+    "dancing"
+  ],
+  "story": "Forty candles, one rooftop, and a lot of laughter.",
+  "style_preset": "warm-celebration",
+  "shot_count": 8
+}

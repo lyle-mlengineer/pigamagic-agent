@@ -1,0 +1,54 @@
+{
+  "event_key": "wedding",
+  "display_name": "Wedding",
+  "phases": ["preparation", "ceremony", "portraits", "reception", "dancing"],
+  "canonical_moments": [
+    "getting ready",
+    "first look",
+    "walking down the aisle",
+    "vow exchange",
+    "ring exchange",
+    "first kiss",
+    "signing the register",
+    "confetti exit",
+    "group portraits",
+    "entrance to reception",
+    "first dance",
+    "speeches",
+    "cake cutting",
+    "parents' dance",
+    "dancing"
+  ],
+  "lighting_notes": [
+    "ceremony: soft directional window light when indoors",
+    "reception: warm uplighting with a touch of flash for subjects",
+    "golden hour for couple portraits when the schedule allows",
+    "avoid blown-out white dresses against bright windows"
+  ],
+  "composition_taboos": [
+    "guests blocking the couple",
+    "empty dance floor in the background",
+    "cropping the dress mid-hem in a full-length portrait",
+    "cluttered tables in the background of a portrait"
+  ],
+  "wardrobe_expectations": "formal: gown or traditional dress, suit or traditional attire; guests in formal dress",
+  "typical_activities": [
+    "exchanging vows",
+    "exchanging rings",
+    "cutting the cake",
+    "first dance",
+    "giving a speech",
+    "greeting guests",
+    "posing for family portraits",
+    "dancing"
+  ],
+  "emotion_notes": [
+    "tears of joy",
+    "laughter during speeches",
+    "quiet intimacy between the couple"
+  ],
+  "sensitive_handling": [
+    "do not invent ritual detail that the researched venue or brief does not support",
+    "keep religious ceremony interiors generic unless the venue was researched"
+  ]
+}

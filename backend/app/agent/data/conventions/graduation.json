@@ -1,0 +1,46 @@
+{
+  "event_key": "graduation",
+  "display_name": "Graduation",
+  "phases": ["preparation", "ceremony", "portraits", "celebration"],
+  "canonical_moments": [
+    "robes and caps being put on",
+    "procession into the hall",
+    "seated among classmates",
+    "walking to the stage",
+    "receiving the certificate",
+    "moving the tassel",
+    "cap tossing",
+    "family portraits",
+    "holding the certificate",
+    "group photo with classmates",
+    "celebrating with family"
+  ],
+  "lighting_notes": [
+    "outdoor campus photographs favour open shade",
+    "hall interiors are often dim; use available light with a slight lift",
+    "afternoon sun on lawns is bright, so keep faces out of harsh shadows"
+  ],
+  "composition_taboos": [
+    "cutting off the top of a cap",
+    "photographing a graduate's back during the certificate handover",
+    "family members obscuring the certificate"
+  ],
+  "wardrobe_expectations": "academic robe and mortarboard over smart clothing; family in smart-casual or formal wear",
+  "typical_activities": [
+    "receiving a certificate",
+    "tossing caps",
+    "posing with family",
+    "hugging classmates",
+    "holding the certificate up",
+    "celebrating with a toast"
+  ],
+  "emotion_notes": [
+    "pride",
+    "relief",
+    "joy from parents",
+    "excitement among classmates"
+  ],
+  "sensitive_handling": [
+    "do not render specific institutional crests or logos that were not researched"
+  ]
+}

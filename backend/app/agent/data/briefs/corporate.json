@@ -1,0 +1,16 @@
+{
+  "shoot_id": "golden-corporate",
+  "title": "Safari Tech annual summit",
+  "event": "corporate",
+  "venue_name": "Radisson Blu Upper Hill",
+  "activities": [
+    "arriving at the venue",
+    "registration desk",
+    "keynote or presentation",
+    "receiving an award",
+    "networking"
+  ],
+  "story": "One long day of slides, and the conversations that actually mattered.",
+  "style_preset": "editorial",
+  "shot_count": 8
+}

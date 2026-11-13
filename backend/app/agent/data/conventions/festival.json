@@ -1,0 +1,42 @@
+{
+  "event_key": "festival",
+  "display_name": "Festival or concert",
+  "phases": [
+    "arrival",
+    "the crowd",
+    "the performance",
+    "afterwards"
+  ],
+  "canonical_moments": [
+    "arriving at the grounds",
+    "crowd energy",
+    "stage in the distance",
+    "friends together in the crowd",
+    "dancing",
+    "sunset light",
+    "walking home"
+  ],
+  "lighting_notes": [
+    "practical stage lights and haze are part of the look",
+    "shallow depth of field separates friends from the crowd"
+  ],
+  "composition_taboos": [
+    "unintelligible stage detail",
+    "blown-out light beams covering faces"
+  ],
+  "wardrobe_expectations": "casual, expressive, weather-appropriate",
+  "typical_activities": [
+    "dancing",
+    "watching a performance",
+    "singing along",
+    "posing with friends"
+  ],
+  "emotion_notes": [
+    "exhilaration",
+    "togetherness",
+    "euphoria"
+  ],
+  "sensitive_handling": [
+    "do not render recognisable real performers or logos"
+  ]
+}

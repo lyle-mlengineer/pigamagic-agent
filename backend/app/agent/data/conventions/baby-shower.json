@@ -1,0 +1,43 @@
+{
+  "event_key": "baby-shower",
+  "display_name": "Baby shower",
+  "phases": [
+    "arrival",
+    "games",
+    "gifts",
+    "food"
+  ],
+  "canonical_moments": [
+    "arriving and greeting",
+    "decorations in focus",
+    "opening gifts",
+    "games and laughter",
+    "group photo",
+    "cake",
+    "guests chatting"
+  ],
+  "lighting_notes": [
+    "bright, soft indoor light suits the cheerful tone",
+    "avoid harsh overhead light on faces"
+  ],
+  "composition_taboos": [
+    "cluttered backgrounds of unopened gifts",
+    "cutting guests out of a group shot"
+  ],
+  "wardrobe_expectations": "casual to smart-casual; the guest of honour often in a comfortable dress",
+  "typical_activities": [
+    "opening gifts",
+    "playing games",
+    "cutting cake",
+    "group photo",
+    "chatting with guests"
+  ],
+  "emotion_notes": [
+    "warm anticipation",
+    "delight",
+    "shared laughter"
+  ],
+  "sensitive_handling": [
+    "depict the expectant parent comfortably and respectfully; no focus on the body"
+  ]
+}

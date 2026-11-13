@@ -1,0 +1,16 @@
+{
+  "shoot_id": "golden-festival",
+  "title": "Blankets & Wine",
+  "event": "festival",
+  "venue_name": "Ngong Racecourse",
+  "activities": [
+    "arriving at the grounds",
+    "friends together in the crowd",
+    "watching a performance",
+    "dancing",
+    "sunset light"
+  ],
+  "story": "A blanket on the grass, and the exact moment the sun dropped.",
+  "style_preset": "warm-celebration",
+  "shot_count": 9
+}

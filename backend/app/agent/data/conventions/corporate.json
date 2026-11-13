@@ -1,0 +1,44 @@
+{
+  "event_key": "corporate",
+  "display_name": "Corporate event",
+  "phases": [
+    "arrival",
+    "programme",
+    "networking"
+  ],
+  "canonical_moments": [
+    "arriving at the venue",
+    "registration desk",
+    "keynote or presentation",
+    "audience reaction",
+    "panel discussion",
+    "networking",
+    "award presentation",
+    "group photo"
+  ],
+  "lighting_notes": [
+    "stage lighting is often coloured; correct toward neutral skin tones",
+    "bounced flash for networking candids"
+  ],
+  "composition_taboos": [
+    "readable screens with private data",
+    "badges showing personal details",
+    "empty rooms"
+  ],
+  "wardrobe_expectations": "business formal or business casual",
+  "typical_activities": [
+    "presenting",
+    "listening to a talk",
+    "networking",
+    "receiving an award",
+    "group photo"
+  ],
+  "emotion_notes": [
+    "professional engagement",
+    "applause",
+    "focused attention"
+  ],
+  "sensitive_handling": [
+    "avoid legible names, badges, or confidential material on screens"
+  ]
+}
