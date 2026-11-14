@@ -53,8 +53,9 @@
 | 10 safety gate | **DONE** | 34 tests; 548 total pass |
 | 10b golden briefs (all 13 packs) + fixture dedupe fix | **DONE** | 46 tests; 594 total pass |
 | 11 run orchestration + credit ledger | **DONE** | 31 tests; 625 total pass |
-| 12 worker process / queue | **NEXT** | visibility timeout, retry, crash recovery |
-| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; see Step 13 |
+| 12 worker process / queue | **DONE** | 28 tests; 653 total pass |
+| 13 runs API + SSE | **NEXT** | `POST /shoots/{id}/generate`, `GET /runs/{id}`, `GET /runs/{id}/events` |
+| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; follows Step 14 |
 
 ---
 
@@ -729,36 +730,116 @@ cd backend && python -m pytest -q                           # 625 passed
 
 ---
 
-## Current step — 12 Worker process and queue
+## Completed step — 12 Worker process and queue
 
-**Goal:** a standalone worker consuming the queue with visibility timeout, retry, and crash recovery.
+**Status: DONE.** Full suite **653 passed** (28 new in `test_worker.py`). Offline, no Redis.
 
-**Done when (steps.md):** killing the worker mid-job returns the job to `queued` with `attempt += 1`, and no job is processed twice concurrently.
+### What was built
 
-**Files:** `app/agent/worker.py`, `tests/agent/test_worker.py`
+| file | purpose |
+|---|---|
+| `app/agent/worker.py` | `Job`, `JobQueue` protocol, `InMemoryJobQueue`, `Worker`, `WorkerStats`, `ClaimLost`, `enqueue_run_job` |
+| `tests/agent/test_worker.py` | 28 tests, incl. both steps.md gates |
 
-**Builds on:** `app/agent/run.py` (`start_run` is the job body — it already owns the
-state machine, credits and idempotency) and `CreditLedger.reserve`/`settle`.
+### The two gates, verified end to end
 
-**Planned actions:**
-1. A `JobQueue` protocol plus an in-memory implementation with an atomic
-   claim (so two workers cannot take the same job).
-2. Visibility timeout: a claimed job is invisible until its lease expires;
-   expiry returns it to `queued` with `attempt += 1`.
-3. A `Worker` loop that claims, runs `start_run`, and acks or nacks. A crash
-   mid-job must not lose the job — the lease expiry is the recovery path.
-4. Reject re-processing: a claim token fenced per attempt, so a slow worker
-   whose lease expired cannot ack over the top of the new owner.
+```
+claim, then worker "dies", lease lapses → status=queued, attempt 0→1,
+                                          error "lease expired; worker presumed crashed"
+                                           and the job is claimable again
+50 workers race 1 job                  → exactly 1 winner
+```
+
+### Lease + fencing, not just a timeout
+
+A visibility timeout alone prevents a *lost* job. It does not stop a **slow**
+worker whose lease expired from waking up and overwriting the new owner's
+result. So every claim issues a `lease_token` (derived from job id, attempt and
+claim count), and `ack`/`nack` raise `ClaimLost` for anything but the current
+token. Verified: after expiry and re-claim, the original worker's `ack` is
+**rejected** and the current owner's result stands.
+
+Fencing is the part naive queues get wrong; without it, a GC pause is enough to
+corrupt a delivered photo.
+
+### Atomic claim
+
+`InMemoryJobQueue.claim` contains **no `await`**, so on a single-threaded event
+loop the check-and-set is atomic. That is what makes "no job processed twice
+concurrently" true here over Postgres, where the equivalent is
+`SELECT ... FOR UPDATE SKIP LOCKED`. Documented in the class so the port keeps
+the property rather than rediscovering it.
+
+### Recovery ladder
+
+`attempt` increments on both `nack` and lease expiry, and `max_attempts` parks
+the job as **`dead`** — terminal and visible, never silently dropped. A crash
+therefore cannot put a job in a loop nobody owns.
+
+### Design gap found and fixed
+
+**Retried jobs were re-claimed instantly by the same worker.** A drain loop with
+`stop_when_idle` would re-claim a failing job immediately, burning all
+`max_attempts` in milliseconds (observed: 2 jobs → 6 claims) and denying a
+transient provider outage any chance to clear. Added `retry_backoff_seconds`,
+which delays `visible_at` so a nacked job is not claimable until the backoff
+elapses. Tested with an injected clock: queued but not claimable, then claimable
+after the delay.
+
+### Test bugs found too
+
+- Asserted `['job_a','job_b']` for two jobs enqueued back-to-back, but their
+  microsecond timestamps differ, so FIFO-by-time correctly returns insertion
+  order. Fixed the test to advance a clock between enqueues and assert FIFO.
+- `test_worker_reports_stats` drained the whole queue, so a failing job was
+  retried to exhaustion (6 claims). Bounded that test with `max_iterations` and
+  added a separate test asserting the retry-to-`dead` ladder explicitly.
 
 **Verify command:**
 ```bash
-cd backend && python -m pytest -q tests/agent/test_worker.py
-cd backend && python -m pytest -q      # expect 625 + new
+cd backend && python -m pytest -q tests/agent/test_worker.py   # 28 passed
+cd backend && python -m pytest -q                              # 653 passed
 ```
 
 ---
 
-## Following step — product shell integration (after Step 12)
+## Current step — 13 Runs API and SSE
+
+**Goal:** `POST /shoots/{id}/generate`, `GET /runs/{id}`, `GET /runs/{id}/events`
+(SSE with `Last-Event-ID` replay).
+
+**Done when (steps.md):** an SSE client receives `run`, `photo`, and `run_done`
+events in order; reconnecting with `Last-Event-ID` replays only missed events; no
+photo is delivered twice.
+
+**Files:** `app/api/runs.py`, `app/agent/events.py`, `tests/agent/test_runs_api.py`
+
+**Builds on:**
+- `run.py` — `start_run()` is the job body; `GenerationRun.as_dict()` is the
+  serialisation contract, and `on_event(kind, payload)` is already the publish hook.
+- `worker.py` — `enqueue_run_job()` + `Worker` is how a POST becomes background work.
+- `ledger.py` — `InsufficientCredits` on the pre-flight reserve.
+
+**Planned actions:**
+1. `agent/events.py` — an event log with monotonic per-run ids, so SSE ids are
+   `Last-Event-ID`-replayable. Persisted shape over pub/sub (design.md §10.1);
+   pub/sub only notifies.
+2. `app/api/runs.py` — `POST /shoots/{id}/generate` (reserve, enqueue, return
+   `run_id`; honour `Idempotency-Key`), `GET /runs/{id}`, and
+   `GET /runs/{id}/events` as `text/event-stream`.
+3. Replay on reconnect: `Last-Event-ID` replays strictly after that id, so a
+   dropped connection never loses or repeats a photo.
+4. Wire `start_run`'s `on_event` into the event log so real transitions publish.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_runs_api.py
+cd backend && python -m pytest -q      # expect 653 + new
+```
+
+---
+
+## Following step — product shell integration (after Step 14)
 
 **Goal:** wire the agent layer into the product surface in the sibling repo
 `D:\git\potfolio\pigamagic\backend`. That repo currently has **no** agent
@@ -792,13 +873,14 @@ this repo.
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 625 passed
+cd backend && python -m pytest -q      # expect 653 passed
 cd backend && git log --oneline -5     # latest work
 ```
 
-State to trust: **Steps 0.1–11 are complete and green.** The agent layer
-(analyse → research → compile → prompt → render → store, safety-gated, credited)
-is finished and fully offline-verifiable. All 13 event packs have a golden brief.
+State to trust: **Steps 0.1–12 are complete and green.** The agent layer
+(analyse → research → compile → prompt → render → store, safety-gated, credited,
+queue-backed) is finished and fully offline-verifiable. All 13 event packs have a
+golden brief.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`
