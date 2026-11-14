@@ -52,7 +52,9 @@
 | 9 generation + blob storage | **DONE** | 45 tests; 514 total pass |
 | 10 safety gate | **DONE** | 34 tests; 548 total pass |
 | 10b golden briefs (all 13 packs) + fixture dedupe fix | **DONE** | 46 tests; 594 total pass |
-| 11+ product shell / API | **NEXT** | sibling repo `pigamagic/backend` |
+| 11 run orchestration + credit ledger | **DONE** | 31 tests; 625 total pass |
+| 12 worker process / queue | **NEXT** | visibility timeout, retry, crash recovery |
+| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; see Step 13 |
 
 ---
 
@@ -632,19 +634,156 @@ cd backend && python -m app.agent.cli briefs
 
 ---
 
-## Current step — 11 Product shell integration
+## Completed step — 11 Run orchestration and the credit ledger
 
-**Goal:** the agent layer is complete and green. Next is wiring it into the product surface in the sibling repo `D:\git\potfolio\pigamagic\backend`.
+**Status: DONE.** Full suite **625 passed** (31 new in `test_run.py`). Offline, no credentials, no spend.
+
+### What was built
+
+| file | purpose |
+|---|---|
+| `app/agent/ledger.py` | `CreditLedger`, `CreditEntry`, `Reservation`, `InsufficientCredits`, `LedgerConflict` |
+| `app/agent/run.py` | `start_run()`, `GenerationRun`, `InMemoryRunStore`, `transition()`, `RunResult` |
+| `tests/agent/test_run.py` | 31 tests, incl. all three steps.md gates |
+
+### The three gates, verified end to end
+
+```
+12 nodes, 1 forced failure → status=partial, 11 photos, charged 11, refunded 1
+                             one 'refund: render_failed' line, balance 100→89
+3 credits, 12 photos       → status=failed, 0 image calls, balance untouched
+same idempotency key twice → identical run_id, exactly 1 charge entry
+```
+
+### Ordering is the design
+
+`safety gate → reserve → research/compile → render → settle`
+
+- **Safety before reserve** so a refusal never leaves a hold on the balance (test: refused brief → 0 ledger entries).
+- **Reserve before render** so concurrent runs cannot overspend one balance, and an unaffordable request costs **0 provider calls** (asserted with counting providers).
+- **Settle last** so the charge reflects what actually arrived.
+
+### Reserve-then-settle
+
+`reserve` removes the whole N from the balance and records a `reservation` line.
+`settle` then only **refunds** what was not delivered, and records the charge as a
+zero-delta audit line — the hold already left the balance, so deducting again is
+double-charging. Each failed node gets its own visible `refund: render_failed`
+line; cache hits get `refund: cache_hit`; anything left over gets one
+`refund: unrendered` line. `settle` raises if a credit is still held afterwards,
+so a stuck balance is a loud failure rather than a silent leak.
+
+Balances are **derived from entries**, never stored separately, so the account
+balance and the ledger cannot disagree.
+
+### State machine
+
+`queued → researching → compiling → rendering → done | partial | failed`
+
+Transitions go through `transition()` and are validated against
+`ALLOWED_TRANSITIONS`. An illegal move raises an error that **names the legal
+next states**, and terminal states are terminal (`partial` cannot drift to `done`
+later, which would otherwise corrupt a settled balance). `history` records every
+step with a timestamp, so a support ticket is answered by reading what happened.
+
+`partial` is reported honestly: it also warns the user when fewer photos were
+produced than requested, so a short run never looks like a clean one.
+
+### Bugs found and fixed
+
+1. **`reserve` idempotency was broken.** The replay lookup keyed `_reservations`
+   by `entry.run_id`, but reservations are keyed by entry **id**, so every replay
+   fell through to `LedgerConflict`. A retried `POST /generate` — the exact case
+   §9.3 requires to be safe — would have raised instead of returning the run.
+2. **`settle` double-charged every run.** It refunded the failed nodes *and then*
+   computed the charge cap from the already-mutated reservation, so the refund
+   shrank the cap and was applied again: a 6-photo run charged 12.
+3. **`settle` deducted a second time.** A reservation already removes N from the
+   balance; charging `-billable` again double-deducted. Charge is now a zero-delta
+   audit line and the balance moves only by the refund.
+4. **`statement()['refunded']` had the wrong sign** (summed `-delta` on entries
+   whose delta is already positive), reporting `-2` for 2 refunded credits.
+5. **`VenueProfile.signature_details` (300 chars) was copied straight into
+   `ShotSpec.venue_anchors` (120 chars)**, crashing plan construction with a
+   `ValidationError` on any well-researched venue. This had never fired because
+   the goldens use short fixture venue text; it only appeared once a real
+   `image_budget_usd` let full research run. Fixed with `_anchor_texts()`, which
+   trims on a word boundary **at the one boundary where the two schemas meet**,
+   rather than loosening the per-shot schema. Golden prompts are unchanged
+   (full suite still green).
+
+### Test bugs found too
+
+- The override signature was `generate(self, request)`, but the real contract is
+  keyword-only `generate(*, prompt, ...)`. Every call raised, so all 12 nodes
+  "failed" and the partial-run test looked like a product bug.
+- "12-node run" via `shot_count=12` silently gave **10**: a golden brief pins its
+  own plan size and `shot_count` only ever *trims*. The gate now uses a brief that
+  names twelve activities, which genuinely yields twelve nodes.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_run.py   # 31 passed
+cd backend && python -m pytest -q                           # 625 passed
+```
+
+---
+
+## Current step — 12 Worker process and queue
+
+**Goal:** a standalone worker consuming the queue with visibility timeout, retry, and crash recovery.
+
+**Done when (steps.md):** killing the worker mid-job returns the job to `queued` with `attempt += 1`, and no job is processed twice concurrently.
+
+**Files:** `app/agent/worker.py`, `tests/agent/test_worker.py`
+
+**Builds on:** `app/agent/run.py` (`start_run` is the job body — it already owns the
+state machine, credits and idempotency) and `CreditLedger.reserve`/`settle`.
 
 **Planned actions:**
-1. Persist `ShootArtifact` and `RenderOutcome` (SQLAlchemy models; Postgres in prod).
-2. SSE endpoint streaming persisted state, so a render survives a page reload.
-3. Credit ledger with M-Pesa (primary) and card (backup).
-4. Comment → edit-instruction → `render_edit()` → child photo, exposed in the feed.
+1. A `JobQueue` protocol plus an in-memory implementation with an atomic
+   claim (so two workers cannot take the same job).
+2. Visibility timeout: a claimed job is invisible until its lease expires;
+   expiry returns it to `queued` with `attempt += 1`.
+3. A `Worker` loop that claims, runs `start_run`, and acks or nacks. A crash
+   mid-job must not lose the job — the lease expiry is the recovery path.
+4. Reject re-processing: a claim token fenced per attempt, so a slow worker
+   whose lease expired cannot ack over the top of the new owner.
 
-**Done when:** a user can submit a brief, watch photos arrive over SSE, comment an edit, and see the child photo appear beside the original without the original changing.
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_worker.py
+cd backend && python -m pytest -q      # expect 625 + new
+```
 
-**Verify command:** run the product shell's suite plus `python -m pytest -q` in this repo.
+---
+
+## Following step — product shell integration (after Step 12)
+
+**Goal:** wire the agent layer into the product surface in the sibling repo
+`D:\git\potfolio\pigamagic\backend`. That repo currently has **no** agent
+integration at all (verified: `app/` holds only `admin, auth, commerce, common,
+media, photos, studio, config, database, feed, main, models, rate_limit, schemas,
+security, storage`), and its photoshoot endpoint logs parameters instead of
+generating images.
+
+**Planned actions:**
+1. Persist `ShootArtifact` and `RenderOutcome` (SQLAlchemy models)
+   — the `ShootArtifact`/`GenerationRun` `as_dict()` payloads are already the
+   serialisation contract; `RunStore` (in `run.py`) is the seam to swap for
+   Postgres.
+2. SSE endpoint streaming persisted state, so a render survives a page reload
+   (design.md §10.1: persisted state, not image-bytes transport).
+3. Credit ledger behind the existing `credits`/`payments` tables — M-Pesa
+   (primary) and card (backup). `CreditLedger` is the semantics to port.
+4. Comment → edit-instruction → `render_edit()` → child photo in the feed.
+
+**Done when:** a user can submit a brief, watch photos arrive over SSE, comment an
+edit, and see the child photo appear beside the original without the original
+changing.
+
+**Verify command:** run the product shell's suite plus `python -m pytest -q` in
+this repo.
 
 ---
 
@@ -653,12 +792,16 @@ cd backend && python -m app.agent.cli briefs
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 594 passed
-git log --oneline -5                   # latest work
+cd backend && python -m pytest -q      # expect 625 passed
+cd backend && git log --oneline -5     # latest work
 ```
 
-State to trust: **Steps 0.1–10b are complete and green.** The agent layer (analyse → research → compile → prompt → render → store, safety-gated) is finished and fully offline-verifiable. All 13 event packs have a golden brief.
+State to trust: **Steps 0.1–11 are complete and green.** The agent layer
+(analyse → research → compile → prompt → render → store, safety-gated, credited)
+is finished and fully offline-verifiable. All 13 event packs have a golden brief.
 
 Outstanding items for you:
-1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example` (never committed — verified absent from history).
-2. Run `backend/scripts/colab_smoke.py` in Colab to confirm the free Qwen identity path on a real GPU.
+1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`
+   (never committed — verified absent from history).
+2. Run `backend/scripts/colab_smoke.py` in Colab to confirm the free Qwen
+   identity path on a real GPU.

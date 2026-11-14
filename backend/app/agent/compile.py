@@ -158,6 +158,35 @@ SYSTEM_PROMPT = (
 )
 
 
+#: `ShotSpec.venue_anchors` uses `ShortText` (120 chars) while
+#: `VenueProfile.signature_details` uses `DetailText` (300), because a researched
+#: description is allowed to be fuller than a per-shot anchor. Copying one into
+#: the other without widening the contract crashed plan construction on any
+#: well-researched venue, so anchors are folded to the shot's limit here — at the
+#: single boundary where the two schemas meet.
+ANCHOR_MAX_CHARS = 120
+
+
+def _anchor_texts(venue: VenueProfile, *, limit: int = 3) -> list[str]:
+    """Venue details usable as per-shot anchors: deduped, trimmed, order-kept."""
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for raw in list(venue.signature_details[:limit]) + list(venue.architecture[:limit]):
+        text = " ".join(str(raw).split())
+        if len(text) > ANCHOR_MAX_CHARS:
+            # Trim on a word boundary so the anchor stays readable, and drop a
+            # trailing separator left by the cut.
+            text = text[:ANCHOR_MAX_CHARS]
+            if " " in text:
+                text = text[: text.rfind(" ")]
+            text = text.rstrip(" ,.;:-")
+        if not text or text.casefold() in seen:
+            continue
+        seen.add(text.casefold())
+        anchors.append(text)
+    return anchors
+
+
 def build_brief_payload(
     brief: ShootBrief,
     cast: Sequence[CastEntry],
@@ -205,7 +234,7 @@ def build_brief_payload(
             }
             for entry in cast
         ],
-        "venue_anchors": list(venue.signature_details[:3]) + list(venue.architecture[:3]),
+        "venue_anchors": _anchor_texts(venue),
         "venue_kind": venue.kind,
         "venue_confidence": venue.confidence,
         "sensitive": pack.is_sensitive,
