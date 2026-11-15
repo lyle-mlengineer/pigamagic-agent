@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.conventions import (
+from pigamagic_agent.agent.conventions import (
     ALIASES,
     CONVENTIONS_DIR,
     SENSITIVE_EVENTS,

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.comments import (
+from pigamagic_agent.agent.comments import (
     ALWAYS_PRESERVED,
     EDITABLE_FIELDS,
     Comment,
@@ -27,10 +27,10 @@ from app.agent.comments import (
     parent_bytes_unchanged,
     route_comment,
 )
-from app.agent.config import AgentSettings
-from app.agent.plan import EditInstruction, ShotSpec
-from app.agent.providers.image_fixture import FixtureImageProvider
-from app.agent.storage import LocalBlobStore
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.plan import EditInstruction, ShotSpec
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+from pigamagic_agent.agent.storage import LocalBlobStore
 
 
 def _shot(node_id="s03", framing="wide", lighting="warm window light") -> ShotSpec:
@@ -318,12 +318,12 @@ def test_instruction_key_is_stable_and_content_derived():
 @pytest.mark.asyncio
 async def test_gate_parent_photo_bytes_are_unchanged_by_an_edit(tmp_path):
     """The real path: render, edit, and compare the parent's bytes on disk."""
-    from app.agent.pipeline import load_brief, run_pipeline
-    from app.agent.prompts import assemble_prompt
-    from app.agent.providers.llm_fixture import FixtureLLMProvider
-    from app.agent.providers.vision_fixture import FixtureVisionProvider
-    from app.agent.providers.web_fixture import FixtureWebProvider
-    from app.agent.render import render_edit, render_plan
+    from pigamagic_agent.agent.pipeline import load_brief, run_pipeline
+    from pigamagic_agent.agent.prompts import assemble_prompt
+    from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+    from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+    from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+    from pigamagic_agent.agent.render import render_edit, render_plan
 
     settings = AgentSettings(
         media_dir=str(tmp_path / "media"),

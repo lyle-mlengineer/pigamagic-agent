@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 
-from app.agent.config import AgentSettings
-from app.agent.conventions import get_pack
-from app.agent.profiles import VenueProfile
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.research import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.conventions import get_pack
+from pigamagic_agent.agent.profiles import VenueProfile
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.research import (
     CONFIDENCE_NONE,
     CONFIDENCE_PARTIAL,
     CONFIDENCE_RESEARCHED,

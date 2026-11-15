@@ -62,7 +62,7 @@
 | 18 lineage + per-edit credits | **DONE** | 28 tests; 766 total pass |
 | 19 eval harness | **DONE** | 33 tests; 799 total pass |
 | 20 safety console + purge paths | **DONE** | 25 tests; 824 total pass |
-| 11+ product shell / API | **BLOCKED** | sibling repo `pigamagic/backend`; after Step 20 |
+| 11+ product shell / API | **PART DONE** | vendored + real generation wired; SSE/comment-edit still open |
 
 ---
 
@@ -1332,32 +1332,89 @@ cd backend && python -m pytest -q                              # 824 passed
 
 ---
 
-## Following step — product shell integration (after Steps 14-20)
+## In progress — product shell integration
 
-**Goal:** wire the agent layer into the product surface in the sibling repo
-`D:\git\potfolio\pigamagic\backend`. That repo currently has **no** agent
-integration at all (verified: `app/` holds only `admin, auth, commerce, common,
-media, photos, studio, config, database, feed, main, models, rate_limit, schemas,
-security, storage`), and its photoshoot endpoint logs parameters instead of
-generating images.
+**Status: PART DONE.** Vendored and generating real photos. Agent suite **826
+passed**; shell suite **19 passed**.
 
-**Planned actions:**
-1. Persist `ShootArtifact` and `RenderOutcome` (SQLAlchemy models)
-   — the `ShootArtifact`/`GenerationRun` `as_dict()` payloads are already the
-   serialisation contract; `RunStore` (in `run.py`) is the seam to swap for
-   Postgres.
-2. SSE endpoint streaming persisted state, so a render survives a page reload
-   (design.md §10.1: persisted state, not image-bytes transport).
-3. Credit ledger behind the existing `credits`/`payments` tables — M-Pesa
-   (primary) and card (backup). `CreditLedger` is the semantics to port.
-4. Comment → edit-instruction → `render_edit()` → child photo in the feed.
+### How the two repos fit together
 
-**Done when:** a user can submit a brief, watch photos arrive over SSE, comment an
-edit, and see the child photo appear beside the original without the original
-changing.
+Both projects use a top-level `app` package, so they cannot share a `sys.path`.
+The agent is therefore **vendored** into the shell at `backend/app/pigamagic_agent`
+with its import root rewritten `pigamagic_agent.*` -> `app.pigamagic_agent.*`.
 
-**Verify command:** run the product shell's suite plus `python -m pytest -q` in
-this repo.
+`backend/sync_agent.sh` is the only place that rewrite lives:
+
+```bash
+cd /d/git/potfolio/pigamagic/backend
+./sync_agent.sh            # copy + rewrite
+./sync_agent.sh --check    # exit 1 if the vendored copy drifted (verified non-vacuous)
+```
+
+Hand-editing the vendored copy would let it diverge from the repo under test, so
+the script is the contract. A drift check was confirmed to fail by appending a
+line to a vendored module.
+
+### What now works end to end
+
+```
+POST /api/v1/shoots                      -> 201, a real shoot
+POST /api/v1/shoots/{id}/feed?limit=3    -> 200, 3 real 1024x1024 PNGs
+GET  /api/v1/media/{id}                  -> 200, those exact bytes
+GET  /api/v1/auth/me                     -> credits 50 -> 47
+GET  /api/v1/dashboard                   -> credits.used 3, reserved 0
+```
+
+Verified by hand: 3 photos, 3 `Media` rows, 3 blob files on disk, one
+`GenerationJob` with the plan and prompt persisted on `input_data`, and one
+`-3 "photos generated (3)"` ledger row.
+
+### The bug this integration found in the agent
+
+**Reserve-then-settle makes the charge invisible to a naive reader.** The agent's
+`settle` removes credits at reservation time and then records a **zero-delta**
+`charge` entry as an audit line. A bridge that sums entry deltas records nothing —
+so the first version of the shell integration generated every photo **for free**.
+Found by hand-checking the balance after a run, not by a test.
+
+Fixed in two places:
+- agent: `CreditLedger.reservations(account_id=...)`, so the charged figure is
+  reachable as a first-class read (2 new tests pin it);
+- shell: `persist_ledger_deltas` reads `reservation.charged`, and also decrements
+  `users.credits`, because `GET /auth/me` reads that denormalised column rather
+  than summing the ledger.
+
+**`start_run` does not raise on a refusal.** It records a terminal failed run and
+returns it, so the route answers `200 []` unless it reads the failure off the
+run's history. The shell now maps `safety gate` -> 422 and credits -> 402.
+
+### Also changed
+
+- `RunResult.persisted` — a host attaches its own rows without mutating the frozen
+  result (the shell uses `dataclasses.replace`). 2 tests.
+- The shell's `test_sample_feed_uses_shoot_details_and_generates_new_random_items`
+  asserted the deleted stub's contract (`demo-photo-*`, `/assets/img/feed-`,
+  printed parameters). Rewritten to assert the real contract, including that
+  private story text never reaches a caption.
+
+### Still open (in priority order)
+
+1. **Providers are fixtures.** One line in `api/photos.py::_run_pipeline_sync`
+   switches to a real image provider; it needs a key and a budget.
+2. **SSE.** The agent's `/runs/{id}/events` works; the shell generates
+   synchronously so the client waits. `GenerationJob` already models the state.
+3. **Comment -> edit.** `comments.compile_edit` + `render_edit` are tested and
+   ready; `PhotoComment.edit_job_id` is the join.
+4. **One flag store.** The agent's `FlagRegistry` is in-memory while the shell has
+   `GeneratedPhoto.safety_flagged`; they must share a store before a flag survives
+   a restart.
+
+**Verify command:**
+```bash
+cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q     # 826
+cd /d/git/potfolio/pigamagic/backend && ../venv/Scripts/python -m pytest -q   # 19
+cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
+```
 
 ---
 
@@ -1366,39 +1423,29 @@ this repo.
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 824 passed
-cd backend && python -m app.agent.cli eval   # exit 0 = eval gate passes
-cd backend && git log --oneline -5     # latest work
+cd backend && python -m pytest -q                                  # expect 826 passed
+cd backend && python -m app.agent.cli eval                          # exit 0 = eval gate
+cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q      # expect 19 passed
+cd ../pigamagic/backend && ./sync_agent.sh --check                  # vendored copy in sync
+cd ../pigamagic/backend && git log --oneline -3                     # latest shell work
 ```
 
-State to trust: **Steps 0.1–14 and 17–20 are complete and green.** The agent layer
-(analyse → research → compile → prompt → render → store, safety-gated, credited,
-queue-backed, streamed over SSE into one feed card contract, comments compiled into
-safe edit deltas, lineage/compare with per-edit credits, a CI eval gate over every
-golden brief, and a flag-review console plus a verified account purge) is finished
-and fully offline-verifiable. All 13 event packs have a golden brief.
+State to trust: **Steps 0.1–14 and 17–20 are complete and green (826 tests), and
+the agent is vendored into the product shell at
+`pigamagic/backend/app/pigamagic_agent` generating real photos through the real
+credit ledger (19 shell tests).**
 
-**Milestone 6 (hardened and safe) is complete.** Steps 15 and 16 remain blocked on
-outside dependencies (a paid search API key; `pgvector`), and neither blocks the
-remaining work.
+Step order note: 14 → 17 → 18 → 19 → 20 was intentional. Step 15 needs a paid
+search API key and Step 16 needs `pgvector`; neither is available and neither
+blocks the remaining work.
 
-Step order note: 14 → 17 → 18 → 19 → 20 was intentional. Step 15 needs a paid search
-API key and Step 16 needs `pgvector`, neither of which is available.
-
-### Next: product shell integration
-
-Step 11+ in the table is the remaining piece: wiring this agent layer into
-`D:\git\potfolio\pigamagic\backend`. See the **Following step** section above for
-the four planned actions (persist `ShootArtifact`/`RenderOutcome`, SSE over persisted
-state, the credit ledger behind the existing `credits`/`payments` tables, and
-comment → edit → child photo). The seams are already in place: `RunStore`,
-`PhotoStore`, `EventLog`, `CreditLedger` and `FlagRegistry` all satisfy protocols, so
-the work is a Postgres implementation of each rather than a rewrite.
+The remaining work is in the **In progress — product shell integration** section
+above, in this order: real providers, SSE, comment→edit, and one shared flag store.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`
    (never committed — verified absent from history).
 2. Run `backend/scripts/colab_smoke.py` in Colab to confirm the free Qwen
    identity path on a real GPU.
-3. Nothing is committed since Step 18 — Steps 19 and 20 are on disk and green but
-   uncommitted. Commit them before starting the shell integration.
+3. Neither repo has been committed since the shell integration began. Commit the
+   agent repo first, then the shell (which vendors it), so the pair stays paired.

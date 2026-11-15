@@ -14,14 +14,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app.agent.plan import (
+from pigamagic_agent.agent.plan import (
     CameraSpec,
     EditInstruction,
     ModelRef,
     ShootPlan,
     ShotSpec,
 )
-from app.agent.profiles import (
+from pigamagic_agent.agent.profiles import (
     CastEntry,
     FaceFeatures,
     Garment,

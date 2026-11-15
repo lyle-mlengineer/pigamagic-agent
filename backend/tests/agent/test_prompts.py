@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 
-from app.agent.compile import ShootBrief, procedural_plan
-from app.agent.config import AgentSettings
-from app.agent.conventions import get_pack
-from app.agent.plan import CameraSpec, ShotSpec
-from app.agent.profiles import CastEntry, Garment, PersonProfile, VenueProfile, WardrobeProfile
-from app.agent.prompts import (
+from pigamagic_agent.agent.compile import ShootBrief, procedural_plan
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.conventions import get_pack
+from pigamagic_agent.agent.plan import CameraSpec, ShotSpec
+from pigamagic_agent.agent.profiles import CastEntry, Garment, PersonProfile, VenueProfile, WardrobeProfile
+from pigamagic_agent.agent.prompts import (
     GLOBAL_NEGATIVES,
     REFERENCE_END,
     REFERENCE_START,
@@ -376,7 +376,7 @@ def test_as_dict_is_json_serialisable() -> None:
 
 
 def test_assemble_for_plan_covers_every_node() -> None:
-    from app.agent.plan import ShootPlan
+    from pigamagic_agent.agent.plan import ShootPlan
 
     pack = get_pack("wedding")
     brief = ShootBrief(

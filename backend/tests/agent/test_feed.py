@@ -16,9 +16,9 @@ import json
 
 import pytest
 
-from app.agent.config import AgentSettings
-from app.agent.events import EventRecorder, InMemoryEventLog
-from app.agent.feed import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.events import EventRecorder, InMemoryEventLog
+from pigamagic_agent.agent.feed import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
     Cursor,
@@ -31,14 +31,14 @@ from app.agent.feed import (
     page_cards,
     photo_card,
 )
-from app.agent.ledger import CreditLedger
-from app.agent.run import InMemoryRunStore
-from app.agent.providers.image_fixture import FixtureImageProvider
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.storage import LocalBlobStore
-from app.api.runs import ProviderBundle, build_dependencies, create_app
+from pigamagic_agent.agent.ledger import CreditLedger
+from pigamagic_agent.agent.run import InMemoryRunStore
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.storage import LocalBlobStore
+from pigamagic_agent.api.runs import ProviderBundle, build_dependencies, create_app
 
 ACCOUNT = "acct_feed"
 API = "/api/v1"

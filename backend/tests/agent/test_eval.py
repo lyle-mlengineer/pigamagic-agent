@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.config import AgentSettings
-from app.agent.eval import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.eval import (
     IDENTITY_THRESHOLD,
     MAX_BRIEF_TOKENS,
     MAX_PROMPT_TOKENS,
@@ -34,10 +34,10 @@ from app.agent.eval import (
     score_identity,
     score_prompt_stability,
 )
-from app.agent.pipeline import list_briefs, load_brief, run_pipeline
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.pipeline import list_briefs, load_brief, run_pipeline
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
 
 
 def _settings() -> AgentSettings:
@@ -311,7 +311,7 @@ def test_identity_score_persists_no_embedding():
 @pytest.mark.asyncio
 async def test_identity_references_are_scoped_to_the_people_in_frame():
     """`brief_plan_identity_refs` must mirror what the renderer actually sends."""
-    from app.agent.render import identity_refs_for
+    from pigamagic_agent.agent.render import identity_refs_for
 
     artifact = await _artifact()
     scoped = brief_plan_identity_refs(artifact.plan)
@@ -367,7 +367,7 @@ async def test_prompt_stability_requires_every_anchor_section():
 
 @pytest.mark.asyncio
 async def test_est_tokens_matches_the_assembly_estimator():
-    from app.agent.prompts import estimate_tokens
+    from pigamagic_agent.agent.prompts import estimate_tokens
 
     text = "a" * 700
     assert est_tokens(text) == estimate_tokens(text)
@@ -406,12 +406,12 @@ async def test_a_failing_report_says_fail_and_names_whats_wrong():
 
 
 def test_cli_eval_exits_zero_when_every_brief_passes():
-    """`python -m app.agent.cli eval` is the whole CI gate."""
+    """`python -m pigamagic_agent.agent.cli eval` is the whole CI gate."""
     import subprocess
     import sys
 
     result = subprocess.run(
-        [sys.executable, "-m", "app.agent.cli", "eval", "--brief", "wedding", "--quiet"],
+        [sys.executable, "-m", "pigamagic_agent.agent.cli", "eval", "--brief", "wedding", "--quiet"],
         capture_output=True,
         text=True,
         timeout=180,
@@ -428,7 +428,7 @@ def test_cli_eval_exits_nonzero_on_a_degraded_prompt():
         [
             sys.executable,
             "-m",
-            "app.agent.cli",
+            "pigamagic_agent.agent.cli",
             "eval",
             "--brief",
             "wedding",

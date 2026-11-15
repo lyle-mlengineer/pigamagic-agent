@@ -18,17 +18,17 @@ from typing import Any
 
 import pytest
 
-from app.agent.cli import _demo_venue, demo_cast
-from app.agent.config import AgentSettings
-from app.agent.pipeline import load_brief, run_pipeline
-from app.agent.plan import CameraSpec, ShotSpec
-from app.agent.providers.base import CostEstimate, GeneratedImage, ProviderError
-from app.agent.providers.http_base import BudgetLedger
-from app.agent.providers.image_fixture import FixtureImageProvider, render_fixture_png
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.render import (
+from pigamagic_agent.agent.cli import _demo_venue, demo_cast
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.pipeline import load_brief, run_pipeline
+from pigamagic_agent.agent.plan import CameraSpec, ShotSpec
+from pigamagic_agent.agent.providers.base import CostEstimate, GeneratedImage, ProviderError
+from pigamagic_agent.agent.providers.http_base import BudgetLedger
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider, render_fixture_png
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.render import (
     RenderOutcome,
     RenderedPhoto,
     default_seed,
@@ -36,7 +36,7 @@ from app.agent.render import (
     render_edit,
     render_plan,
 )
-from app.agent.storage import (
+from pigamagic_agent.agent.storage import (
     BackblazeB2Store,
     BlobStore,
     LocalBlobStore,
@@ -656,8 +656,8 @@ def test_render_edit_creates_a_child_photo(tmp_path) -> None:
 
 
 def test_edit_instruction_reaches_the_prompt() -> None:
-    from app.agent.prompts import AssembledPrompt
-    from app.agent.render import _apply_instruction
+    from pigamagic_agent.agent.prompts import AssembledPrompt
+    from pigamagic_agent.agent.render import _apply_instruction
 
     base = AssembledPrompt(
         prompt="[STYLE] x\n[ACTION] exchanging vows",
@@ -675,9 +675,9 @@ def test_edit_instruction_reaches_the_prompt() -> None:
 
 
 def test_empty_edit_instruction_is_rejected() -> None:
-    from app.agent.providers.base import AgentError
-    from app.agent.prompts import AssembledPrompt
-    from app.agent.render import _apply_instruction
+    from pigamagic_agent.agent.providers.base import AgentError
+    from pigamagic_agent.agent.prompts import AssembledPrompt
+    from pigamagic_agent.agent.render import _apply_instruction
 
     base = AssembledPrompt(
         prompt="[ACTION] x",

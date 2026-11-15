@@ -17,23 +17,23 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.config import AgentSettings
-from app.agent.events import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.events import (
     EventRecorder,
     InMemoryEventLog,
     RunEvent,
     parse_last_event_id,
     sse_frame,
 )
-from app.agent.ledger import CREDITS_PER_PHOTO, CreditLedger
-from app.agent.pipeline import load_brief
-from app.agent.providers.image_fixture import FixtureImageProvider
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.run import InMemoryRunStore, start_run
-from app.agent.storage import LocalBlobStore
-from app.api.runs import (
+from pigamagic_agent.agent.ledger import CREDITS_PER_PHOTO, CreditLedger
+from pigamagic_agent.agent.pipeline import load_brief
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.run import InMemoryRunStore, start_run
+from pigamagic_agent.agent.storage import LocalBlobStore
+from pigamagic_agent.api.runs import (
     ProviderBundle,
     build_dependencies,
     create_app,
@@ -255,7 +255,7 @@ def test_generate_rejects_a_second_run_on_the_same_active_shoot(tmp_path):
     deps = _deps(tmp_path)
     # An active run on this shoot, planted directly: the endpoint must not
     # start a second one and double-charge.
-    from app.agent.run import GenerationRun
+    from pigamagic_agent.agent.run import GenerationRun
 
     deps.store.put(
         GenerationRun(
@@ -434,7 +434,7 @@ async def test_stream_mid_run_delivers_new_events_as_they_land(tmp_path):
     log = deps.events
     store = deps.store
 
-    from app.agent.run import GenerationRun
+    from pigamagic_agent.agent.run import GenerationRun
 
     run = GenerationRun(
         run_id="run_live", shoot_id="s1", account_id=ACCOUNT, status="rendering"

@@ -15,22 +15,22 @@ from typing import ClassVar
 
 import pytest
 
-from app.agent.compile import ShootBrief
-from app.agent.config import AgentSettings
-from app.agent.ledger import (
+from pigamagic_agent.agent.compile import ShootBrief
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.ledger import (
     CREDITS_PER_PHOTO,
     CreditLedger,
     InsufficientCredits,
     LedgerConflict,
     LedgerError,
 )
-from app.agent.pipeline import load_brief
-from app.agent.providers.base import ProviderError
-from app.agent.providers.image_fixture import FixtureImageProvider
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.run import (
+from pigamagic_agent.agent.pipeline import load_brief
+from pigamagic_agent.agent.providers.base import ProviderError
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.run import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
     InMemoryRunStore,
@@ -41,7 +41,7 @@ from app.agent.run import (
     start_run,
     transition,
 )
-from app.agent.storage import LocalBlobStore
+from pigamagic_agent.agent.storage import LocalBlobStore
 
 ACCOUNT = "acct_test"
 
@@ -576,3 +576,45 @@ async def test_run_result_serialises(tmp_path):
     assert payload["artifact_digest"]
     assert payload["render"]["complete"] is True
     assert payload["reservation"]["settled"] is True
+
+
+@pytest.mark.asyncio
+async def test_reservations_lists_the_charge_for_a_settled_run(tmp_path):
+    """The *charged* figure lives on the reservation, not on the entry delta.
+
+    Reserve-then-settle records a zero-delta `charge` audit line, so a host that
+    reads only `entries()` cannot tell what a run cost and silently gives the
+    photos away. `reservations()` is the read that makes the amount reachable.
+    """
+    harness = _harness(tmp_path)
+    ledger = harness["ledger"]
+    result = await start_run(_brief("wedding"), account_id=ACCOUNT, shot_count=2, **harness)
+
+    settled = ledger.reservations(account_id=ACCOUNT)
+    assert len(settled) == 1
+    reservation = settled[0]
+    assert reservation.run_id == result.run.run_id
+    assert reservation.charged == 2
+    assert reservation.settled is True
+
+    # The audit line itself carries no money, which is exactly the trap.
+    charges = [e for e in ledger.entries(account_id=ACCOUNT) if e.kind == "charge"]
+    assert charges and all(entry.delta == 0 for entry in charges)
+
+
+@pytest.mark.asyncio
+async def test_run_result_carries_a_host_persisted_payload(tmp_path):
+    """A host attaches its own rows without mutating the frozen result.
+
+    The shell persists `GeneratedPhoto` rows and needs to hand them back from the
+    same call. `RunResult` is frozen and slotted, so this must be a replace.
+    """
+    from dataclasses import replace
+
+    harness = _harness(tmp_path)
+    result = await start_run(_brief("wedding"), account_id=ACCOUNT, shot_count=2, **harness)
+    assert result.persisted is None
+
+    carried = replace(result, persisted={"photos": ["a", "b"]})
+    assert carried.persisted == {"photos": ["a", "b"]}
+    assert result.persisted is None, "the original must be untouched"

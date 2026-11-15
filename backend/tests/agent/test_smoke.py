@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import app.agent as agent
+import pigamagic_agent.agent as agent
 
 
 def test_agent_package_imports() -> None:
@@ -16,7 +16,7 @@ def test_agent_imports_in_a_fresh_process() -> None:
     """Guards against import-time side effects (credentials, network, DB)."""
     backend_dir = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        [sys.executable, "-c", "import app.agent; print(app.agent.PROMPT_VERSION)"],
+        [sys.executable, "-c", "import pigamagic_agent.agent; print(pigamagic_agent.agent.PROMPT_VERSION)"],
         cwd=backend_dir,
         capture_output=True,
         text=True,

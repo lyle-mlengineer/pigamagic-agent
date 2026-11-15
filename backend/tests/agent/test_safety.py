@@ -13,15 +13,15 @@ from typing import Any
 
 import pytest
 
-from app.agent.cli import _demo_venue, demo_cast
-from app.agent.compile import ShootBrief
-from app.agent.config import AgentSettings
-from app.agent.pipeline import load_brief, run_pipeline
-from app.agent.providers.image_fixture import FixtureImageProvider
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.safety import (
+from pigamagic_agent.agent.cli import _demo_venue, demo_cast
+from pigamagic_agent.agent.compile import ShootBrief
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.pipeline import load_brief, run_pipeline
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.safety import (
     SAFETY_VERSION,
     SafetyGate,
     SafetyRefusal,
@@ -29,7 +29,7 @@ from app.agent.safety import (
     check_brief,
     require_allowed,
 )
-from app.agent.storage import LocalBlobStore
+from pigamagic_agent.agent.storage import LocalBlobStore
 
 
 def _brief(**overrides: Any) -> ShootBrief:
@@ -264,7 +264,7 @@ def test_require_allowed_raises_only_on_refusal() -> None:
 
 def test_plan_is_checked_not_just_the_brief() -> None:
     """A clean brief can still compile to a shot we must not render."""
-    from app.agent.plan import ShootPlan
+    from pigamagic_agent.agent.plan import ShootPlan
 
     artifact = _artifact()
     # Inject a bad shot as though the model had produced it.
@@ -336,7 +336,7 @@ def test_render_plan_refuses_a_polluted_artifact(tmp_path) -> None:
     )
 
     async def run():
-        from app.agent.render import render_plan
+        from pigamagic_agent.agent.render import render_plan
 
         return await render_plan(
             polluted,
@@ -351,7 +351,7 @@ def test_render_plan_refuses_a_polluted_artifact(tmp_path) -> None:
 
 
 def test_render_plan_still_works_for_allowed_artifacts(tmp_path) -> None:
-    from app.agent.render import render_plan
+    from pigamagic_agent.agent.render import render_plan
 
     artifact = _artifact()
     outcome = asyncio.run(
@@ -368,8 +368,8 @@ def test_render_plan_still_works_for_allowed_artifacts(tmp_path) -> None:
 
 def test_every_event_pack_has_a_golden_brief() -> None:
     """A convention pack with no brief is untested content."""
-    from app.agent.conventions import pack_keys
-    from app.agent.pipeline import list_briefs, load_brief
+    from pigamagic_agent.agent.conventions import pack_keys
+    from pigamagic_agent.agent.pipeline import list_briefs, load_brief
 
     covered = {load_brief(name).event for name in list_briefs()}
     missing = sorted(set(pack_keys()) - covered - {"generic"})

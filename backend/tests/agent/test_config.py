@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.agent.config import AgentSettings, get_settings, reset_settings_cache
+from pigamagic_agent.agent.config import AgentSettings, get_settings, reset_settings_cache
 
 
 @pytest.fixture(autouse=True)

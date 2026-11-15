@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.comments import Comment, compile_edit
-from app.agent.ledger import CREDITS_PER_PHOTO, CreditLedger
-from app.agent.lineage import (
+from pigamagic_agent.agent.comments import Comment, compile_edit
+from pigamagic_agent.agent.ledger import CREDITS_PER_PHOTO, CreditLedger
+from pigamagic_agent.agent.lineage import (
     COMPARE_FIELDS,
     InMemoryPhotoStore,
     LineageError,
@@ -31,7 +31,7 @@ from app.agent.lineage import (
     settle_edit,
     siblings_of,
 )
-from app.agent.plan import ShotSpec
+from pigamagic_agent.agent.plan import ShotSpec
 
 ACCOUNT = "acct_lineage"
 
@@ -334,7 +334,7 @@ def test_retrying_the_same_edit_does_not_charge_twice():
 
 def test_an_edit_cannot_overspend():
     ledger = CreditLedger(balances={ACCOUNT: 0})
-    from app.agent.ledger import InsufficientCredits
+    from pigamagic_agent.agent.ledger import InsufficientCredits
 
     with pytest.raises(InsufficientCredits):
         reserve_edit(
@@ -346,7 +346,7 @@ def test_an_edit_cannot_overspend():
 
 
 def test_settling_without_a_reservation_raises():
-    from app.agent.lineage import EditCharge
+    from pigamagic_agent.agent.lineage import EditCharge
 
     charge = EditCharge(run_id="edit_x", instruction_key="k", reserved=0, charged=0, refunded=0)
     with pytest.raises(LineageError, match="never reserved"):
@@ -361,15 +361,15 @@ def test_settling_without_a_reservation_raises():
 def _client(tmp_path):
     from fastapi.testclient import TestClient
 
-    from app.agent.config import AgentSettings
-    from app.agent.events import InMemoryEventLog
-    from app.agent.providers.image_fixture import FixtureImageProvider
-    from app.agent.providers.llm_fixture import FixtureLLMProvider
-    from app.agent.providers.vision_fixture import FixtureVisionProvider
-    from app.agent.providers.web_fixture import FixtureWebProvider
-    from app.agent.run import InMemoryRunStore
-    from app.agent.storage import LocalBlobStore
-    from app.api.runs import ProviderBundle, build_dependencies, create_app
+    from pigamagic_agent.agent.config import AgentSettings
+    from pigamagic_agent.agent.events import InMemoryEventLog
+    from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+    from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+    from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+    from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+    from pigamagic_agent.agent.run import InMemoryRunStore
+    from pigamagic_agent.agent.storage import LocalBlobStore
+    from pigamagic_agent.api.runs import ProviderBundle, build_dependencies, create_app
 
     deps = build_dependencies(
         settings=AgentSettings(

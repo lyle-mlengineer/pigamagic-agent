@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from app.agent.compile import (
+from pigamagic_agent.agent.compile import (
     MIN_SHOTS_PER_PERSON,
     STYLE_PRESETS,
     ShootBrief,
@@ -22,11 +22,11 @@ from app.agent.compile import (
     procedural_plan,
     validate_and_repair,
 )
-from app.agent.config import AgentSettings
-from app.agent.conventions import get_pack
-from app.agent.plan import ShootPlan, ShotSpec
-from app.agent.profiles import CastEntry, Garment, PersonProfile, VenueProfile, WardrobeProfile
-from app.agent.providers.llm_fixture import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.conventions import get_pack
+from pigamagic_agent.agent.plan import ShootPlan, ShotSpec
+from pigamagic_agent.agent.profiles import CastEntry, Garment, PersonProfile, VenueProfile, WardrobeProfile
+from pigamagic_agent.agent.providers.llm_fixture import (
     FailingLLMProvider,
     FixtureLLMProvider,
     ScriptedLLMProvider,
@@ -167,7 +167,7 @@ def test_style_presets_are_complete() -> None:
 
 
 def _shots(raw: list[dict[str, Any]]) -> list[ShotSpec]:
-    from app.agent.compile import _shot_from_llm  # noqa: PLC0415
+    from pigamagic_agent.agent.compile import _shot_from_llm  # noqa: PLC0415
 
     settings = _settings()
     return [shot for index, item in enumerate(raw) if (shot := _shot_from_llm(item, index, settings))]

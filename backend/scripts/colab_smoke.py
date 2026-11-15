@@ -71,14 +71,14 @@ def check_environment() -> None:
 
 
 async def main() -> int:
-    from app.agent.cli import _demo_venue, demo_cast
-    from app.agent.config import AgentSettings
-    from app.agent.pipeline import load_brief, run_pipeline
-    from app.agent.providers.image_huggingface import HuggingFaceImageProvider
-    from app.agent.providers.llm_fixture import FixtureLLMProvider
-    from app.agent.providers.vision_fixture import FixtureVisionProvider
-    from app.agent.providers.web_fixture import FixtureWebProvider
-    from app.agent.providers.registry import describe_image_providers
+    from pigamagic_agent.agent.cli import _demo_venue, demo_cast
+    from pigamagic_agent.agent.config import AgentSettings
+    from pigamagic_agent.agent.pipeline import load_brief, run_pipeline
+    from pigamagic_agent.agent.providers.image_huggingface import HuggingFaceImageProvider
+    from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+    from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+    from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+    from pigamagic_agent.agent.providers.registry import describe_image_providers
 
     settings = AgentSettings(
         _env_file=None,

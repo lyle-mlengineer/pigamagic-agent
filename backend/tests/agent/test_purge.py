@@ -21,17 +21,17 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent.analyze import InMemoryAnalysisCache, ReferenceAnalysis
-from app.agent.config import AgentSettings
-from app.agent.events import EventRecorder, InMemoryEventLog
-from app.agent.ledger import CreditLedger
-from app.agent.lineage import InMemoryPhotoStore, LineageError
-from app.agent.pipeline import load_brief
-from app.agent.providers.image_fixture import FixtureImageProvider
-from app.agent.providers.llm_fixture import FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
-from app.agent.purge import (
+from pigamagic_agent.agent.analyze import InMemoryAnalysisCache, ReferenceAnalysis
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.events import EventRecorder, InMemoryEventLog
+from pigamagic_agent.agent.ledger import CreditLedger
+from pigamagic_agent.agent.lineage import InMemoryPhotoStore, LineageError
+from pigamagic_agent.agent.pipeline import load_brief
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider
+from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.purge import (
     FlagEntry,
     FlagRegistry,
     PurgeError,
@@ -39,9 +39,9 @@ from app.agent.purge import (
     review_card,
     review_queue,
 )
-from app.agent.run import InMemoryRunStore, start_run
-from app.agent.storage import LocalBlobStore
-from app.api.runs import ProviderBundle, build_dependencies, create_app, execute_run
+from pigamagic_agent.agent.run import InMemoryRunStore, start_run
+from pigamagic_agent.agent.storage import LocalBlobStore
+from pigamagic_agent.api.runs import ProviderBundle, build_dependencies, create_app, execute_run
 
 ACCOUNT = "acct_purge"
 OTHER = "acct_other"
@@ -106,7 +106,7 @@ async def _run_once(deps, *, account_id: str = ACCOUNT, shoot_id: str = "golden-
         "style_preset": brief.style_preset,
         "shot_count": shots,
     }
-    from app.agent.compile import ShootBrief
+    from pigamagic_agent.agent.compile import ShootBrief
 
     active = ShootBrief(**payload)
     return await execute_run(

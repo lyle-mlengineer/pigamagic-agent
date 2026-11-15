@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from app.agent.analyze import (
+from pigamagic_agent.agent.analyze import (
     AnalysisOutcome,
     InMemoryAnalysisCache,
     ReferenceAnalysis,
@@ -19,8 +19,8 @@ from app.agent.analyze import (
     analyze_references,
     fuse_cast,
 )
-from app.agent.config import AgentSettings
-from app.agent.providers.vision_fixture import FixtureVisionProvider, ScriptedVisionProvider
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider, ScriptedVisionProvider
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -466,7 +466,7 @@ async def test_scene_hints_collect_dynamics_and_venue_cues() -> None:
 
 
 def test_scene_hints_are_deterministic() -> None:
-    from app.agent.analyze import derive_scene_hints
+    from pigamagic_agent.agent.analyze import derive_scene_hints
 
     analyses = [
         _analysis("m2", "usable", [_person("p1")], dynamics=["b"], cues=["y"]),
@@ -497,7 +497,7 @@ async def test_fixture_provider_varies_with_content() -> None:
 
 
 async def test_fixture_provider_satisfies_vision_protocol() -> None:
-    from app.agent.providers import VisionProvider
+    from pigamagic_agent.agent.providers import VisionProvider
 
     assert isinstance(FixtureVisionProvider(), VisionProvider)
 

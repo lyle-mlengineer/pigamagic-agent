@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.agent.providers import (
+from pigamagic_agent.agent.providers import (
     CostEstimate,
     GeneratedImage,
     ImageProvider,
@@ -200,6 +200,6 @@ def test_offline_mode_error_is_not_retryable() -> None:
 
 
 def test_provider_not_configured_is_an_agent_error() -> None:
-    from app.agent.providers import AgentError
+    from pigamagic_agent.agent.providers import AgentError
 
     assert isinstance(ProviderNotConfigured("no key"), AgentError)

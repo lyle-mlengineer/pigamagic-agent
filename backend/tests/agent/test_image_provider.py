@@ -18,8 +18,8 @@ from typing import Any
 
 import pytest
 
-from app.agent.config import AgentSettings
-from app.agent.providers.base import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.providers.base import (
     CostEstimate,
     GeneratedImage,
     ImageProvider,
@@ -27,7 +27,7 @@ from app.agent.providers.base import (
     ProviderError,
     ProviderNotConfigured,
 )
-from app.agent.providers.http_base import (
+from pigamagic_agent.agent.providers.http_base import (
     BudgetExceeded,
     BudgetLedger,
     decode_b64,
@@ -35,11 +35,11 @@ from app.agent.providers.http_base import (
     image_dimensions,
     sniff_image_type,
 )
-from app.agent.providers.image_fal import FalImageProvider
-from app.agent.providers.image_fixture import FixtureImageProvider, render_fixture_png
-from app.agent.providers.image_gemini import GeminiImageProvider
-from app.agent.providers.image_openai import OpenAIImageProvider
-from app.agent.providers.registry import (
+from pigamagic_agent.agent.providers.image_fal import FalImageProvider
+from pigamagic_agent.agent.providers.image_fixture import FixtureImageProvider, render_fixture_png
+from pigamagic_agent.agent.providers.image_gemini import GeminiImageProvider
+from pigamagic_agent.agent.providers.image_openai import OpenAIImageProvider
+from pigamagic_agent.agent.providers.registry import (
     available_image_providers,
     build_image_provider,
     describe_image_providers,
@@ -487,13 +487,13 @@ def test_providers_that_cannot_keep_likeness_say_so() -> None:
 
 
 def _hf(model: str = "", **overrides: Any):
-    from app.agent.providers.image_huggingface import HuggingFaceImageProvider
+    from pigamagic_agent.agent.providers.image_huggingface import HuggingFaceImageProvider
 
     return HuggingFaceImageProvider(model=model, settings=_settings(**overrides))
 
 
 def test_huggingface_is_registered_under_several_aliases() -> None:
-    from app.agent.providers.image_huggingface import HuggingFaceImageProvider
+    from pigamagic_agent.agent.providers.image_huggingface import HuggingFaceImageProvider
 
     for alias in ("huggingface", "hf", "local", "colab"):
         provider = build_image_provider(_settings(image_provider=alias))
@@ -509,7 +509,7 @@ def test_huggingface_needs_no_api_key() -> None:
 
 def test_huggingface_default_model_is_ungated() -> None:
     """The default must work in a fresh Colab with no licence click."""
-    from app.agent.providers.image_huggingface import DEFAULT_MODEL, resolve_spec
+    from pigamagic_agent.agent.providers.image_huggingface import DEFAULT_MODEL, resolve_spec
 
     assert resolve_spec(DEFAULT_MODEL).gated is False
 
@@ -539,7 +539,7 @@ def test_text_to_image_models_refuse_identity_refs() -> None:
 
 def test_schnell_uses_its_documented_parameters() -> None:
     """Timestep-distilled: guidance must be 0 and sequence length <= 256."""
-    from app.agent.providers.image_huggingface import resolve_spec
+    from pigamagic_agent.agent.providers.image_huggingface import resolve_spec
 
     spec = resolve_spec("black-forest-labs/FLUX.1-schnell")
     assert spec.guidance_scale == 0.0
@@ -549,7 +549,7 @@ def test_schnell_uses_its_documented_parameters() -> None:
 
 def test_qwen_uses_true_cfg_scale_not_guidance_scale() -> None:
     """Qwen silently ignores guidance_scale; true_cfg_scale is the real knob."""
-    from app.agent.providers.image_huggingface import resolve_spec
+    from pigamagic_agent.agent.providers.image_huggingface import resolve_spec
 
     spec = resolve_spec("Qwen/Qwen-Image-Edit-2509")
     assert spec.true_cfg_scale == 4.0
@@ -557,7 +557,7 @@ def test_qwen_uses_true_cfg_scale_not_guidance_scale() -> None:
 
 
 def test_schnell_prompt_drops_the_reference_block_for_the_token_limit() -> None:
-    from app.agent.prompts import REFERENCE_END, REFERENCE_START
+    from pigamagic_agent.agent.prompts import REFERENCE_END, REFERENCE_START
 
     provider = _hf("black-forest-labs/FLUX.1-schnell")
     prompt = (
@@ -579,7 +579,7 @@ def test_huggingface_refuses_when_diffusers_is_missing() -> None:
 
 
 def test_huggingface_reports_gated_models_clearly() -> None:
-    from app.agent.providers.image_huggingface import resolve_spec
+    from pigamagic_agent.agent.providers.image_huggingface import resolve_spec
 
     spec = resolve_spec("black-forest-labs/FLUX.1-dev")
     assert spec.gated is True
@@ -587,7 +587,7 @@ def test_huggingface_reports_gated_models_clearly() -> None:
 
 
 def test_unknown_checkpoint_gets_a_conservative_spec() -> None:
-    from app.agent.providers.image_huggingface import resolve_spec
+    from pigamagic_agent.agent.providers.image_huggingface import resolve_spec
 
     spec = resolve_spec("some-org/some-model")
     assert spec.identity_refs == 0
@@ -595,7 +595,7 @@ def test_unknown_checkpoint_gets_a_conservative_spec() -> None:
 
 
 def test_model_specs_are_internally_consistent() -> None:
-    from app.agent.providers.image_huggingface import MODEL_SPECS
+    from pigamagic_agent.agent.providers.image_huggingface import MODEL_SPECS
 
     for model_id, spec in MODEL_SPECS.items():
         assert spec.model_id == model_id
@@ -617,13 +617,13 @@ def test_colab_models_are_offered_in_the_capability_summary() -> None:
 
 
 def _nvidia(**overrides: Any):
-    from app.agent.providers.image_nvidia import NvidiaImageProvider
+    from pigamagic_agent.agent.providers.image_nvidia import NvidiaImageProvider
 
     return NvidiaImageProvider(api_key="nvapi-test", settings=_settings(**overrides))
 
 
 def test_nvidia_is_registered_and_selectable() -> None:
-    from app.agent.providers.image_nvidia import NvidiaImageProvider
+    from pigamagic_agent.agent.providers.image_nvidia import NvidiaImageProvider
 
     provider = build_image_provider(_settings(image_provider="nvidia", nvidia_api_key="nvapi-x"))
     assert isinstance(provider, NvidiaImageProvider)
@@ -644,7 +644,7 @@ def test_nvidia_accepts_the_sample_settings_names() -> None:
 
 
 def test_nvidia_defaults_match_the_documented_endpoint() -> None:
-    from app.agent.providers.image_nvidia import DEFAULT_MODEL, NVIDIA_BASE_URL
+    from pigamagic_agent.agent.providers.image_nvidia import DEFAULT_MODEL, NVIDIA_BASE_URL
 
     provider = _nvidia()
     assert provider.model == DEFAULT_MODEL == "flux.3-image-klein"
@@ -675,7 +675,7 @@ def test_nvidia_refuses_identity_refs_it_cannot_honour() -> None:
 
 
 def test_nvidia_fits_an_over_long_prompt_by_dropping_references_first() -> None:
-    from app.agent.prompts import REFERENCE_END, REFERENCE_START
+    from pigamagic_agent.agent.prompts import REFERENCE_END, REFERENCE_START
 
     long_note = "a very long reference note about the venue colonnade " * 60
     prompt = (
@@ -805,11 +805,11 @@ def test_nvidia_self_hosted_enables_editing_mode() -> None:
 
 def test_nvidia_judges_real_plan_prompts_against_the_limit() -> None:
     """Our assembled prompts must fit the 2000-char cap after fitting."""
-    from app.agent.cli import _demo_venue, demo_cast
-    from app.agent.pipeline import load_brief, run_pipeline
-    from app.agent.providers.llm_fixture import FixtureLLMProvider
-    from app.agent.providers.vision_fixture import FixtureVisionProvider
-    from app.agent.providers.web_fixture import FixtureWebProvider
+    from pigamagic_agent.agent.cli import _demo_venue, demo_cast
+    from pigamagic_agent.agent.pipeline import load_brief, run_pipeline
+    from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+    from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+    from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
 
     async def build():
         brief = load_brief("wedding")

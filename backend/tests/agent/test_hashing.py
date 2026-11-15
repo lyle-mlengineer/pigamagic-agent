@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.config import AgentSettings
-from app.agent.hashing import (
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.hashing import (
     canonical_json,
     node_id,
     normalize_venue_key,
@@ -329,8 +329,8 @@ def _run_hash_in_fresh_process(code: str) -> str:
 
 
 _HASH_SNIPPET = """
-from app.agent.config import AgentSettings
-from app.agent.hashing import prompt_hash, normalize_venue_key, stable_digest
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.hashing import prompt_hash, normalize_venue_key, stable_digest
 s = AgentSettings(_env_file=None)
 print(prompt_hash(
     resolved_prompt="a wedding at dusk",
@@ -375,7 +375,7 @@ def test_prompt_hash_is_identical_across_processes_with_different_hash_seeds() -
 def test_venue_key_is_identical_across_processes() -> None:
     in_process = normalize_venue_key("The Sarova Stanley Hotel, Nairobi!", "Wedding")
     from_subprocess = _run_hash_in_fresh_process(
-        "from app.agent.hashing import normalize_venue_key\n"
+        "from pigamagic_agent.agent.hashing import normalize_venue_key\n"
         "print(normalize_venue_key('The Sarova Stanley Hotel, Nairobi!', 'Wedding'))"
     )
     assert in_process == from_subprocess

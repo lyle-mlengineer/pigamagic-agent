@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.cli import main
-from app.agent.config import AgentSettings
-from app.agent.pipeline import (
+from pigamagic_agent.agent.cli import main
+from pigamagic_agent.agent.config import AgentSettings
+from pigamagic_agent.agent.pipeline import (
     BRIEFS_DIR,
     PIPELINE_VERSION,
     BriefNotFound,
@@ -22,10 +22,10 @@ from app.agent.pipeline import (
     load_brief,
     run_pipeline,
 )
-from app.agent.plan import ShootPlan
-from app.agent.providers.llm_fixture import FailingLLMProvider, FixtureLLMProvider
-from app.agent.providers.vision_fixture import FixtureVisionProvider
-from app.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.plan import ShootPlan
+from pigamagic_agent.agent.providers.llm_fixture import FailingLLMProvider, FixtureLLMProvider
+from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 # Every shipped golden brief. Each one exercises a different convention pack, so
@@ -52,7 +52,7 @@ def _settings(**overrides) -> AgentSettings:
 
 
 async def _run(brief_name: str, *, llm=None, budget=None):
-    from app.agent.cli import demo_cast, _demo_venue
+    from pigamagic_agent.agent.cli import demo_cast, _demo_venue
 
     brief = load_brief(brief_name)
     return await run_pipeline(
@@ -152,7 +152,7 @@ async def test_artifact_round_trips_through_json() -> None:
     assert reloaded["pipeline_version"] == PIPELINE_VERSION
     assert len(reloaded["plan"]["shots"]) == len(artifact.plan.shots)
     # Re-serialising canonical JSON must be byte-identical.
-    from app.agent.hashing import canonical_json
+    from pigamagic_agent.agent.hashing import canonical_json
 
     assert canonical_json(reloaded) == text
 
@@ -180,7 +180,7 @@ async def test_prompt_budget_is_respected_end_to_end() -> None:
 
 
 async def test_no_reference_images_is_reported_not_crashed() -> None:
-    from app.agent.cli import _demo_venue
+    from pigamagic_agent.agent.cli import _demo_venue
 
     brief = load_brief("wedding")
     artifact = await run_pipeline(
@@ -244,7 +244,7 @@ def test_cli_show_prompt_prints_the_reference_block(capsys: pytest.CaptureFixtur
 def test_cli_runs_as_a_module_subprocess() -> None:
     """The documented invocation must actually work, not just the in-process call."""
     result = subprocess.run(
-        [sys.executable, "-m", "app.agent.cli", "plan", "--brief", "wedding"],
+        [sys.executable, "-m", "pigamagic_agent.agent.cli", "plan", "--brief", "wedding"],
         cwd=BACKEND_DIR,
         capture_output=True,
         text=True,
@@ -257,7 +257,7 @@ def test_cli_runs_as_a_module_subprocess() -> None:
 def test_cli_output_is_identical_across_two_runs() -> None:
     def run() -> str:
         result = subprocess.run(
-            [sys.executable, "-m", "app.agent.cli", "plan", "--brief", "wedding"],
+            [sys.executable, "-m", "pigamagic_agent.agent.cli", "plan", "--brief", "wedding"],
             cwd=BACKEND_DIR,
             capture_output=True,
             text=True,

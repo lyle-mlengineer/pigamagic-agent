@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.agent.worker import (
+from pigamagic_agent.agent.worker import (
     ClaimLost,
     InMemoryJobQueue,
     Job,
