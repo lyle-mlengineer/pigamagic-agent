@@ -52,6 +52,13 @@ from ..agent.feed import (
     page_cards,
     photo_card,
 )
+from ..agent.lineage import (
+    InMemoryPhotoStore,
+    LineageError,
+    PhotoStore,
+    lineage_tree,
+    compare_with_parent,
+)
 from ..agent.hashing import canonical_json
 from ..agent.ledger import CreditLedger, InsufficientCredits
 from ..agent.pipeline import BriefNotFound, load_brief
@@ -96,6 +103,8 @@ class ApiDependencies:
     #: Built lazily by the caller: a real adapter needs credentials.
     providers: "ProviderBundle"
     queue: InMemoryJobQueue | None = None
+    #: Delivered photos, for lineage/compare. Defaults to an in-memory store.
+    photos: PhotoStore | None = None
     #: Blob bytes are already persisted content-addressed, so a URL is enough.
     media_url_template: str = "/api/v1/media/{key}"
     #: Called with the finished `RunResult` so the shell can persist artifacts.
@@ -104,6 +113,13 @@ class ApiDependencies:
     @property
     def event_store(self) -> EventLog:
         return self.events
+
+    @property
+    def photo_store(self) -> PhotoStore:
+        """Where delivered photos live. Lazily created so the field stays optional."""
+        if self.photos is None:
+            self.photos = InMemoryPhotoStore()
+        return self.photos
 
 
 @dataclass
@@ -124,6 +140,7 @@ def build_dependencies(
     ledger: CreditLedger | None = None,
     store: RunStore | None = None,
     events: EventLog | None = None,
+    photos: PhotoStore | None = None,
     providers: ProviderBundle | None = None,
 ) -> ApiDependencies:
     """Wire the API with sensible defaults; override any part in tests."""
@@ -136,6 +153,7 @@ def build_dependencies(
         events=events or InMemoryEventLog(),
         settings=active,
         providers=providers,
+        photos=photos or InMemoryPhotoStore(),
         queue=InMemoryJobQueue(),
     )
 
@@ -278,6 +296,13 @@ async def execute_run(
     outcome = result.outcome
     recorder = recorder or EventRecorder(deps.events, result.run.run_id)
     if outcome is not None:
+        # Register every delivered photo so lineage/compare can find it. Done
+        # before publishing so a client that reacts to the `photo` event and
+        # immediately asks for lineage never races an empty store.
+        for photo in outcome.photos:
+            # Idempotent for an identical photo; `put` raises for a conflicting
+            # one, which is deliberate and must not be swallowed.
+            deps.photo_store.put(photo.as_dict())
         recorder.publish_photos(photo.as_dict() for photo in outcome.photos)
         recorder.publish_failures(outcome.failures)
     done = deferred_done if deferred_done is not None else result.run.as_dict()
@@ -486,6 +511,31 @@ def create_app(deps: ApiDependencies | None = None) -> FastAPI:
     @app.get("/api/v1/health")
     async def health() -> Any:
         return {"status": "ok", "events_version": "events-v1"}
+
+    @app.get("/api/v1/photos/{photo_id}/lineage")
+    async def get_lineage(photo_id: str) -> Any:
+        """Every take in this photo's family, as a tree plus a sibling list.
+
+        FR-7.6: the user compares and deletes takes. A root photo's alternate
+        takes are its edits, so both cases return the whole family.
+        """
+        current = require_deps()
+        try:
+            tree = lineage_tree(current.photo_store, photo_id)
+        except LineageError as exc:
+            return _error(404, "photo_not_found", str(exc))
+        return JSONResponse(status_code=200, content=tree)
+
+    @app.get("/api/v1/photos/{photo_id}/compare")
+    async def get_compare(photo_id: str) -> Any:
+        """Parent vs child: what this edit changed and what it preserved."""
+        current = require_deps()
+        try:
+            payload = compare_with_parent(current.photo_store, photo_id)
+        except LineageError as exc:
+            status = 404 if "no photo" in str(exc) else 422
+            return _error(status, "compare_unavailable", str(exc))
+        return JSONResponse(status_code=200, content=payload)
 
     @app.get("/api/v1/feed")
     async def get_feed(

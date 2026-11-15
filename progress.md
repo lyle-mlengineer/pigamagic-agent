@@ -59,8 +59,9 @@
 | 17 comment modes + edit compilation | **DONE** | 38 tests; 738 total pass |
 | 15 real web research | **BLOCKED** | needs a paid search API key |
 | 16 RAG corpus | **BLOCKED** | needs `pgvector` (not installed) |
-| 18 lineage + per-edit credits | **NEXT** | `GET /photos/{id}/lineage` |
-| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; after Steps 18-20 |
+| 18 lineage + per-edit credits | **DONE** | 28 tests; 766 total pass |
+| 19 eval harness | **NEXT** | identity/coverage/cost assertions on golden briefs |
+| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; after Steps 19-20 |
 
 ---
 
@@ -1041,34 +1042,112 @@ cd backend && python -m pytest -q                                # 738 passed
 
 ---
 
-## Current step — 18 Lineage, compare and per-edit credits
+## Completed step — 18 Lineage, compare and per-edit credits
 
-**Goal:** `GET /photos/{id}/lineage`, compare payloads, independent credit
-reservation per edit (FR-7.5, FR-7.6).
+**Status: DONE.** Full suite **766 passed** (28 new in `test_lineage.py`). Offline, no credentials.
 
-**Done when (steps.md):** a photo has ≥2 siblings retrievable, and each edit
-appears as its own ledger line.
+### What was built
 
-**Files:** `app/agent/lineage.py` (new), `app/api/photos.py` (new),
-`tests/agent/test_lineage.py` (new)
+| file | purpose |
+|---|---|
+| `app/agent/lineage.py` | `InMemoryPhotoStore`, `siblings_of()`, `lineage_tree()`, `root_of()`, `compare()`, `reserve_edit()`/`settle_edit()`, `delete_take()` |
+| `app/api/runs.py` | `GET /photos/{id}/lineage`, `GET /photos/{id}/compare`, photo registration on render |
+| `tests/agent/test_lineage.py` | 28 tests, incl. both steps.md gates |
 
-**Builds on:**
-- `render_edit()` — already sets `parent_id`, so lineage exists in the data.
-- `comments.py` — `chain()` folds a lineage into one instruction.
-- `ledger.py` — `reserve`/`settle` already work per run; an edit needs its own.
+### The two gates, verified by hand
 
-**Planned actions:**
-1. `lineage.py` — build a tree from `parent_id`, and the compare payload (parent
-   vs child: what changed, what `preserves` held).
-2. `GET /photos/{id}/lineage` returning siblings and the root, so a user can see
-   every take and delete the ones they dislike.
-3. A credit reservation per edit, keyed on `instruction_key()`, so a retried
-   edit does not charge twice.
+```
+GATE 1 siblings: ['ph_1','ph_2','ph_3'] | count: 3
+       tree root: ph_1 | sibling_count: 3 | depth: 1
+GATE 2 lighting   run=edit_b31391c7bfc8a421cafb charged=1  [('reservation',-1),('charge',0)]
+       framing    run=edit_e0a2f1d14d6595369b17 charged=1  [('reservation',-1),('charge',0)]
+       balance: 8 (10 - 2 edits)
+```
+
+And through HTTP: `GET lineage` → 200 with `sibling_count: 3`; `GET compare` → 200;
+missing photo → 404; comparing an original → 422.
+
+### Decisions worth keeping
+
+- **Lineage is a tree.** `parent_id` forms a forest, and an edit of an edit nests
+  properly (`depth: 2`) rather than being flattened into a list.
+- **A root's siblings are its children.** The root is the only original, so its
+  alternate takes are the edits made from it. Asking from any family member
+  returns the same family, in a stable order so a compare view does not reshuffle.
+- **A missing parent raises; it is never treated as a root.** Pretending a
+  dangling child is an original would show a derived photo as the source.
+- **Cycles are detected**, so a corrupted `parent_id` chain returns an error
+  instead of hanging the request.
+- **`InMemoryPhotoStore.put` is idempotent for identical content and loud for
+  conflicting content.** Silently overwriting a delivered photo is the exact
+  trust violation design.md §11.2 forbids.
+- **`delete_take` refuses to orphan children.** Deleting a photo with edits tells
+  the caller to delete the takes first; otherwise the family loses its root and
+  every lineage lookup starts raising.
+- **Each edit is its own run** (`edit_<hash>`), keyed on `instruction_key()`. That
+  is what makes "what did this edit cost me?" answerable and a retried edit
+  reconcile instead of charging twice.
+- **Compare reports only what changed**, and only from a fixed `COMPARE_FIELDS`
+  set. A realistic edit touches `framing`, `seed` and `prompt_hash`; anything else
+  appearing as "changed" is noise.
+
+### Bugs / weaknesses found and fixed
+
+1. **The compare payload reported noise for synthetic records.** My first hand
+   check showed `moment`, `activity`, `provider` and `model` as "changed", because
+   the hand-built child omitted fields the real parent had. The logic was right —
+   those fields genuinely differed — but it showed the compare view is only
+   trustworthy when both records come from the same shape. Added a regression test
+   using a child copied from the real parent, asserting exactly
+   `{framing, seed, prompt_hash}`.
+2. **A pointless `try/except LineageError: raise`** around photo registration,
+   caught on review before commit. `put` already distinguishes idempotent from
+   conflicting.
+3. **Unused imports** (`InsufficientCredits`, `Iterable`, `Sequence`, `EditChange`)
+   found with a small AST pass rather than left to rot.
+
+### Gates proven non-vacuous
+
+Both gates were checked by injecting the regression each one exists to catch:
+
+- dropping the original from the sibling pool → `test_gate_two_or_more_siblings_are_retrievable` **fails**
+- giving every edit one shared run id → `test_gate_each_edit_has_its_own_ledger_lines` **fails**
 
 **Verify command:**
 ```bash
-cd backend && python -m pytest -q tests/agent/test_lineage.py
-cd backend && python -m pytest -q      # expect 738 + new
+cd backend && python -m pytest -q tests/agent/test_lineage.py   # 28 passed
+cd backend && python -m pytest -q                               # 766 passed
+```
+
+---
+
+## Current step — 19 Eval harness in CI
+
+**Goal:** automated identity, coverage, prompt-stability and cost assertions on
+golden briefs.
+
+**Done when (steps.md):** the harness fails loudly when a prompt change degrades
+identity score below threshold.
+
+**Files:** `app/agent/eval.py` (new), `tests/agent/test_eval.py` (new)
+
+**Builds on:**
+- `pipeline.py` — `ShootArtifact.digest()` and the 13 golden briefs.
+- `prompts.py` — golden prompt files already gate text drift.
+- `conventions.py` — coverage expectations come from the packs.
+- `ledger.py` — `CREDITS_PER_PHOTO` and cost estimates.
+
+**Planned actions:**
+1. `eval.py` — one harness computing identity, coverage, prompt-stability and
+   cost metrics over every golden brief, with explicit thresholds.
+2. An identity score that **actually moves** when a prompt degrades (e.g. identity
+   block dropped or reference notes truncated), so the gate is not decoration.
+3. A cost ceiling per brief, so a prompt change that inflates token counts fails.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_eval.py
+cd backend && python -m pytest -q      # expect 766 + new
 ```
 
 ---
@@ -1107,18 +1186,18 @@ this repo.
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 738 passed
+cd backend && python -m pytest -q      # expect 766 passed
 cd backend && git log --oneline -5     # latest work
 ```
 
-State to trust: **Steps 0.1–14 and 17 are complete and green.** The agent layer
+State to trust: **Steps 0.1–14, 17 and 18 are complete and green.** The agent layer
 (analyse → research → compile → prompt → render → store, safety-gated, credited,
-queue-backed, streamed over SSE into one feed card contract, with comments
-compiled into safe edit deltas) is finished and fully offline-verifiable. All 13
-event packs have a golden brief.
+queue-backed, streamed over SSE into one feed card contract, comments compiled into
+safe edit deltas, lineage/compare with per-edit credits) is finished and fully
+offline-verifiable. All 13 event packs have a golden brief.
 
-Step order note: 14 → 17 was intentional. Step 15 needs a paid search API key and
-Step 16 needs `pgvector`, neither of which is available; Step 17 continues the
+Step order note: 14 → 17 → 18 was intentional. Step 15 needs a paid search API key and
+Step 16 needs `pgvector`, neither of which is available; 17 and 18 continue the
 product chain with neither.
 
 Outstanding items for you:
