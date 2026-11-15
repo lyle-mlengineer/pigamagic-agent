@@ -54,8 +54,8 @@
 | 10b golden briefs (all 13 packs) + fixture dedupe fix | **DONE** | 46 tests; 594 total pass |
 | 11 run orchestration + credit ledger | **DONE** | 31 tests; 625 total pass |
 | 12 worker process / queue | **DONE** | 28 tests; 653 total pass |
-| 13 runs API + SSE | **NEXT** | `POST /shoots/{id}/generate`, `GET /runs/{id}`, `GET /runs/{id}/events` |
-| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; follows Step 14 |
+| 13 runs API + SSE | **DONE** | 24 tests; 677 total pass |
+| 11+ product shell / API | **NEXT** | sibling repo `pigamagic/backend`; follows Step 14 |
 
 ---
 
@@ -803,43 +803,130 @@ cd backend && python -m pytest -q                              # 653 passed
 
 ---
 
-## Current step — 13 Runs API and SSE
+## Completed step — 13 Runs API and SSE
 
-**Goal:** `POST /shoots/{id}/generate`, `GET /runs/{id}`, `GET /runs/{id}/events`
-(SSE with `Last-Event-ID` replay).
+**Status: DONE.** Full suite **677 passed** (24 new in `test_runs_api.py`). Offline, no credentials, no spend.
 
-**Done when (steps.md):** an SSE client receives `run`, `photo`, and `run_done`
-events in order; reconnecting with `Last-Event-ID` replays only missed events; no
-photo is delivered twice.
+### What was built
 
-**Files:** `app/api/runs.py`, `app/agent/events.py`, `tests/agent/test_runs_api.py`
+| file | purpose |
+|---|---|
+| `app/agent/events.py` | `RunEvent`, `EventLog` protocol, `InMemoryEventLog`, `EventRecorder`, `sse_frame`, `parse_last_event_id` |
+| `app/api/__init__.py` | package surface (`create_app`, `build_dependencies`) |
+| `app/api/runs.py` | the three endpoints, `execute_run()`, `stream_events()`, `run_payload()` |
+| `tests/agent/test_runs_api.py` | 24 tests, incl. all three steps.md gates |
 
-**Builds on:**
-- `run.py` — `start_run()` is the job body; `GenerationRun.as_dict()` is the
-  serialisation contract, and `on_event(kind, payload)` is already the publish hook.
-- `worker.py` — `enqueue_run_job()` + `Worker` is how a POST becomes background work.
-- `ledger.py` — `InsufficientCredits` on the pre-flight reserve.
+### The three gates, verified end to end by hand
 
-**Planned actions:**
-1. `agent/events.py` — an event log with monotonic per-run ids, so SSE ids are
-   `Last-Event-ID`-replayable. Persisted shape over pub/sub (design.md §10.1);
-   pub/sub only notifies.
-2. `app/api/runs.py` — `POST /shoots/{id}/generate` (reserve, enqueue, return
-   `run_id`; honour `Idempotency-Key`), `GET /runs/{id}`, and
-   `GET /runs/{id}/events` as `text/event-stream`.
-3. Replay on reconnect: `Last-Event-ID` replays strictly after that id, so a
-   dropped connection never loses or repeats a photo.
-4. Wire `start_run`'s `on_event` into the event log so real transitions publish.
+```
+POST /shoots/golden-wedding/generate  (4 shots) -> 202, status=done, 4 photos
+GATE 1 order: ['run','run','run','run','photo','photo','photo','photo','run_done']
+         ids: [1,2,3,4,5,6,7,8,9]        contiguous, strictly increasing
+GATE 2 Last-Event-ID: 6 -> replay [7,8,9]  (photo, photo, run_done)
+GATE 3 overlap with already-received photos: set()   every photo delivered once
+```
+
+### Endpoints
+
+- `POST /api/v1/shoots/{shoot_id}/generate` — pre-flight affordability check,
+then reserve → render → settle via `start_run()`. Returns **202** with the run.
+Honours `Idempotency-Key` (header or body), so a double-tap returns the same run
+and charges once.
+- `GET /api/v1/runs/{run_id}` — persisted state plus derived `photo_urls` and
+`events_url`.
+- `GET /api/v1/runs/{run_id}/events` — `text/event-stream`, `Last-Event-ID`
+replay (header **or** `?last_event_id=`, since `EventSource` cannot set headers
+on reconnect).
+
+### Design decisions worth keeping
+
+- **No `sse-starlette`.** SSE is `id:`/`event:`/`data:` lines with a blank-line
+terminator; hand-emitting it is ~20 lines and avoids a dependency for one route.
+- **The stream is a notification channel over persisted state, never the
+transport for pixels** (design.md §10.1). Events carry a URL; bytes stay in the
+content-addressed blob store. A dropped connection therefore costs nothing.
+- **Stream termination is "terminal AND drained"**, not "saw `run_done`".
+Closing on the event alone would drop anything appended in the same tick;
+staying open would leak a connection per client. Verified both directions.
+- **No absolute hosts are frozen into a stored run** — asserted by a test, since
+a persisted `http://localhost:8000/...` is the classic thing that breaks on
+promotion to staging.
+- **Errors are typed**, never prose-only: `{error: {code, message, ...}}` with
+`brief_not_found` / `missing_account` / `invalid_json` / `insufficient_credits`
+(incl. `required` and `available`) / `run_in_progress` / `run_not_found` /
+`shot_count_out_of_range`.
+
+### Bugs found and fixed
+
+1. **Photos were published *after* `run_done`.** `start_run` emits the terminal
+event before the caller sees the outcome, so the gate's required ordering was
+violated. Fixed by buffering `run_done` in `execute_run` and flushing it after
+photos and failures. Caught by the ordering assertion, not by inspection.
+2. **`EventRecorder.publish_photos` dedupe was dead.** `publish_photos` appended
+to the log but never to `self.events`, and the dedupe set was built from
+`self.events` — so it was empty on every call and **every photo would be
+re-published on a retry**. Fixed by reading the dedupe set from the log.
+`publish_failures` had the same shape and now appends its events too.
+3. **`?last_event_id=` never bound.** The FastAPI parameter was named
+`last_event_id_q`, so the query path silently fell back to "replay everything".
+The header path worked, which is exactly why this would have shipped unnoticed:
+curl with a header passes, a browser `EventSource` reconnect duplicates the whole
+feed. Now `Query(alias="last_event_id")`, with a test for the query path.
+4. **Two identical `run` frames on every run.** `start_run` emits `run` on
+creation and again after the reservation; `_run_brief` omits `reserved_credits`,
+so both frames were byte-identical. Consecutive identical `run` events are now
+collapsed in the recorder, since a duplicate state card is client-visible noise.
+
+### Test bug found too
+
+- `test_last_event_id_replays_only_the_missed_events` parked the cursor at frame
+index 2, which — once the duplicate `run` frame was collapsed — sits *before*
+the photos. The test then asserted no photo repeats, which was wrong for that
+cursor. Rewritten to drop the connection after the **first photo**, which is the
+real-world case, and to assert the terminal event still arrives.
 
 **Verify command:**
 ```bash
-cd backend && python -m pytest -q tests/agent/test_runs_api.py
-cd backend && python -m pytest -q      # expect 653 + new
+cd backend && python -m pytest -q tests/agent/test_runs_api.py   # 24 passed
+cd backend && python -m pytest -q                               # 677 passed
 ```
 
 ---
 
-## Following step — product shell integration (after Step 14)
+## Current step — 14 Feed integration
+
+**Goal:** wire generated photos into the existing feed serialisation so streamed
+and settled photos use one card contract.
+
+**Done when (steps.md):** a settled photo and a streamed photo produce identical
+card payload shapes, and cursor pagination stays stable while photos are
+inserted.
+
+**Files:** `app/agent/feed.py` (new), `tests/agent/test_feed.py` (new)
+
+**Builds on:**
+- `render.py` — `RenderedPhoto.as_dict()` is the stored photo shape.
+- `events.py` — the `photo` event payload emitted while streaming.
+- `run.py` — `GenerationRun.photo_ids` is the settled set.
+
+**Planned actions:**
+1. One `photo_card()` builder used by **both** the SSE `photo` event and
+   `GET /runs/{id}`'s photo list, so the shapes cannot drift.
+2. A test asserting the streamed card and the settled card are equal for the
+   same photo — that is the gate, and it fails loudly if either path is edited
+   alone.
+3. Cursor pagination keyed on `(created_at, photo_id)` so inserting a photo
+   mid-scroll cannot shift a page boundary.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_feed.py
+cd backend && python -m pytest -q      # expect 677 + new
+```
+
+---
+
+## Following step — product shell integration (after Steps 14-20)
 
 **Goal:** wire the agent layer into the product surface in the sibling repo
 `D:\git\potfolio\pigamagic\backend`. That repo currently has **no** agent
@@ -873,14 +960,14 @@ this repo.
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 653 passed
+cd backend && python -m pytest -q      # expect 677 passed
 cd backend && git log --oneline -5     # latest work
 ```
 
-State to trust: **Steps 0.1–12 are complete and green.** The agent layer
+State to trust: **Steps 0.1–13 are complete and green.** The agent layer
 (analyse → research → compile → prompt → render → store, safety-gated, credited,
-queue-backed) is finished and fully offline-verifiable. All 13 event packs have a
-golden brief.
+queue-backed, streamed over SSE) is finished and fully offline-verifiable. All 13
+event packs have a golden brief.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`

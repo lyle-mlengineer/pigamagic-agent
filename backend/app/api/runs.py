@@ -1,0 +1,497 @@
+"""Runs API: submit a generation run, poll it, and stream it over SSE.
+
+Three endpoints (steps.md Step 13):
+
+- `POST /shoots/{shoot_id}/generate` — reserve credits, enqueue the job, return
+  the run. Honours `Idempotency-Key`, so a double-tap on a slow phone returns
+  the *same* run instead of charging twice.
+- `GET /runs/{run_id}` — the persisted run state, which is what survives a page
+  reload.
+- `GET /runs/{run_id}/events` — `text/event-stream` over the run's event log,
+  with `Last-Event-ID` replay.
+
+The design rule these endpoints exist to honour (design.md §10.1): **the stream
+is a notification channel over persisted state, never the transport for
+pixels.** Photo bytes live in the blob store; an event carries a URL. That is
+why a dropped connection loses nothing: the client re-reads state and replays
+from the log.
+
+Two smaller decisions worth stating because they are easy to get wrong:
+
+- **No `sse-starlette`.** SSE is a `text/event-stream` body with `id:`/`event:`/
+  `data:` lines and a blank-line terminator. Emitting that directly is ~20 lines
+  and keeps the dependency list honest for one endpoint.
+- **Replay is exclusive of the cursor.** `Last-Event-ID: 7` means "everything
+  from 8". Re-sending 7 would duplicate a feed card.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Sequence
+
+from fastapi import FastAPI, Header, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from ..agent.compile import ShootBrief
+from ..agent.config import AgentSettings, get_settings
+from ..agent.events import (
+    EventLog,
+    EventRecorder,
+    InMemoryEventLog,
+    parse_last_event_id,
+    sse_frame,
+)
+from ..agent.hashing import canonical_json
+from ..agent.ledger import CreditLedger, InsufficientCredits
+from ..agent.pipeline import BriefNotFound, load_brief
+from ..agent.providers.base import AgentError
+from ..agent.run import (
+    GenerationRun,
+    InMemoryRunStore,
+    RunInProgress,
+    RunResult,
+    RunStore,
+    start_run,
+)
+from ..agent.worker import InMemoryJobQueue, enqueue_run_job
+
+#: How long an SSE connection waits for new events before emitting a comment
+#: keep-alive. Long enough to be cheap, short enough to hold the socket open
+#: through proxies that time out idle connections at 30-60s.
+SSE_POLL_SECONDS = 0.5
+
+#: Keep-alive cadence, in polls. 20 * 0.5s = one `: keepalive` every 10s.
+SSE_KEEPALIVE_POLLS = 20
+
+
+# --------------------------------------------------------------------------
+# Dependencies
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ApiDependencies:
+    """Everything the endpoints need, injected rather than imported.
+
+    Injecting this is what lets the tests drive the API end to end with fixture
+    providers and an in-memory queue, and lets the product shell swap in
+    Postgres-backed stores without touching the routes.
+    """
+
+    ledger: CreditLedger
+    store: RunStore
+    events: EventLog
+    settings: AgentSettings
+    #: Built lazily by the caller: a real adapter needs credentials.
+    providers: "ProviderBundle"
+    queue: InMemoryJobQueue | None = None
+    #: Blob bytes are already persisted content-addressed, so a URL is enough.
+    media_url_template: str = "/api/v1/media/{key}"
+    #: Called with the finished `RunResult` so the shell can persist artifacts.
+    on_run_finished: Callable[[RunResult], None] | None = None
+
+    @property
+    def event_store(self) -> EventLog:
+        return self.events
+
+
+@dataclass
+class ProviderBundle:
+    """The four provider seams, bundled so one object crosses the boundary."""
+
+    llm: Any
+    vision: Any
+    web: Any
+    image: Any
+    blobs: Any
+    budget: Any = None
+
+
+def build_dependencies(
+    *,
+    settings: AgentSettings | None = None,
+    ledger: CreditLedger | None = None,
+    store: RunStore | None = None,
+    events: EventLog | None = None,
+    providers: ProviderBundle | None = None,
+) -> ApiDependencies:
+    """Wire the API with sensible defaults; override any part in tests."""
+    active = settings or get_settings()
+    if providers is None:
+        raise ValueError("build_dependencies needs a ProviderBundle (llm/vision/web/image/blobs)")
+    return ApiDependencies(
+        ledger=ledger or CreditLedger(),
+        store=store or InMemoryRunStore(),
+        events=events or InMemoryEventLog(),
+        settings=active,
+        providers=providers,
+        queue=InMemoryJobQueue(),
+    )
+
+
+# --------------------------------------------------------------------------
+# Response shaping
+# --------------------------------------------------------------------------
+
+
+def run_payload(run: GenerationRun, deps: ApiDependencies | None = None) -> dict[str, Any]:
+    """The `GET /runs/{id}` body. Additive over `run.as_dict()`.
+
+    `photo_urls` is derived here rather than stored, so the URL scheme can change
+    without a migration and a stored photo never carries a stale absolute host.
+    """
+    body = run.as_dict()
+    body["events_url"] = f"/api/v1/runs/{run.run_id}/events"
+    body["photo_urls"] = {
+        photo_id: _media_url(deps, photo_id) for photo_id in run.photo_ids
+    }
+    return body
+
+
+def _media_url(deps: ApiDependencies | None, key_or_id: str) -> str:
+    template = deps.media_url_template if deps is not None else "/api/v1/media/{key}"
+    return template.format(key=key_or_id) if key_or_id else ""
+
+
+def _error(status: int, code: str, message: str, **extra: Any) -> JSONResponse:
+    """Uniform error body. A client should never have to parse prose."""
+    payload: dict[str, Any] = {"error": {"code": code, "message": message}}
+    payload["error"].update(extra)
+    return JSONResponse(status_code=status, content=payload)
+
+
+# --------------------------------------------------------------------------
+# Run job
+# --------------------------------------------------------------------------
+
+
+async def execute_run(
+    *,
+    deps: ApiDependencies,
+    brief: ShootBrief,
+    account_id: str,
+    shot_count: int | None,
+    idempotency_key: str,
+    cast: Sequence[Any] | None = None,
+    reference_images: Mapping[str, Sequence[bytes]] | None = None,
+) -> RunResult:
+    """Run the pipeline and publish every event to the run's log.
+
+    The recorder is wired to `start_run`'s `on_event` hook, and photos are
+    published from the outcome afterwards. Photos are published *before*
+    `run_done` so a client that stops at the terminal event has already received
+    every card it will ever get — the ordering the gate asserts.
+    """
+    existing = (
+        deps.store.by_idempotency_key(idempotency_key) if idempotency_key else None
+    )
+    if existing is not None:
+        # A replay must not re-render or re-publish; the log already has it.
+        return RunResult(run=existing, reservation=deps.ledger.reservation_for_run(existing.run_id))
+
+    run_id_hint = ""
+    recorder: EventRecorder | None = None
+    #: `run_done` is held back until photos are published, because the gate
+    #: requires every `photo` before the terminal event. `start_run` emits it
+    #: first (it does not know about photos), so we buffer and flush.
+    deferred_done: dict[str, Any] | None = None
+
+    def on_event(kind: str, payload: dict[str, Any]) -> None:
+        nonlocal recorder, run_id_hint, deferred_done
+        if recorder is None:
+            run_id_hint = str(payload.get("run_id") or "")
+            if not run_id_hint:
+                return
+            recorder = EventRecorder(deps.events, run_id_hint)
+        if kind == "run_done":
+            deferred_done = dict(payload)
+            return
+        recorder(kind, payload)
+
+    providers = deps.providers
+    result = await start_run(
+        brief,
+        account_id=account_id,
+        ledger=deps.ledger,
+        store=deps.store,
+        llm=providers.llm,
+        vision=providers.vision,
+        web=providers.web,
+        image=providers.image,
+        blobs=providers.blobs,
+        settings=deps.settings,
+        cast=cast,
+        reference_images=reference_images,
+        shot_count=shot_count,
+        idempotency_key=idempotency_key,
+        budget=providers.budget,
+        on_event=on_event,
+    )
+
+    outcome = result.outcome
+    recorder = recorder or EventRecorder(deps.events, result.run.run_id)
+    if outcome is not None:
+        recorder.publish_photos(photo.as_dict() for photo in outcome.photos)
+        recorder.publish_failures(outcome.failures)
+    done = deferred_done if deferred_done is not None else result.run.as_dict()
+    _publish_from_done(recorder, done)
+    recorder("run_done", done)
+
+    if deps.on_run_finished is not None:
+        deps.on_run_finished(result)
+    return result
+
+
+def _publish_from_done(recorder: EventRecorder, payload: dict[str, Any]) -> None:
+    """Publish failures carried on the terminal payload, before the terminal event."""
+    failures = payload.get("failures") or []
+    if failures:
+        recorder.publish_failures(failures)
+
+
+# --------------------------------------------------------------------------
+# SSE
+# --------------------------------------------------------------------------
+
+
+async def stream_events(
+    *,
+    deps: ApiDependencies,
+    run: GenerationRun,
+    last_event_id: int,
+    poll_seconds: float = SSE_POLL_SECONDS,
+    keepalive_polls: int = SSE_KEEPALIVE_POLLS,
+    max_idle_polls: int | None = None,
+) -> Any:
+    """Yield SSE frames for a run until it is terminal and fully drained.
+
+    Termination is the subtle part: the stream ends when the run is terminal
+    **and** the log has no unread events. Closing on `run_done` alone would drop
+    any event appended in the same tick, and staying open forever would leak a
+    connection per client.
+    """
+    cursor = last_event_id
+    idle = 0
+    polls = 0
+    while True:
+        pending = deps.events.events_after(run.run_id, cursor)
+        for event in pending:
+            cursor = event.seq
+            yield sse_frame(event=event.kind, data=event.data, event_id=event.seq)
+        if pending:
+            idle = 0
+        else:
+            idle += 1
+            polls += 1
+            if idle % keepalive_polls == 0:
+                # A comment line keeps the socket warm through proxies.
+                yield ": keepalive\n\n"
+
+        current = deps.store.get(run.run_id) or run
+        if current.terminal and not deps.events.events_after(run.run_id, cursor):
+            return
+        if max_idle_polls is not None and idle >= max_idle_polls:
+            return
+        if not pending:
+            await asyncio.sleep(poll_seconds)
+
+
+# --------------------------------------------------------------------------
+# App factory
+# --------------------------------------------------------------------------
+
+
+def create_app(deps: ApiDependencies | None = None) -> FastAPI:
+    """Build the runs API. `deps` is required in practice; the default raises."""
+    app = FastAPI(title="PlusOne Runs API", version="v1")
+    app.state.deps = deps
+
+    def require_deps() -> ApiDependencies:
+        current = getattr(app.state, "deps", None)
+        if current is None:
+            raise RuntimeError(
+                "API dependencies are not configured; call create_app(build_dependencies(...))."
+            )
+        return current
+
+    @app.post("/api/v1/shoots/{shoot_id}/generate")
+    async def generate(
+        shoot_id: str,
+        request: Request,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> Any:
+        current = require_deps()
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return _error(400, "invalid_json", f"request body is not valid JSON: {exc}")
+        if not isinstance(body, dict):
+            return _error(400, "invalid_body", "request body must be a JSON object")
+
+        account_id = str(body.get("account_id") or "").strip()
+        if not account_id:
+            return _error(422, "missing_account", "account_id is required")
+
+        brief_name = str(body.get("brief") or "").strip()
+        try:
+            brief = _brief_from_body(body, shoot_id, brief_name)
+        except BriefNotFound as exc:
+            return _error(404, "brief_not_found", str(exc))
+        except ValueError as exc:
+            return _error(422, "invalid_brief", str(exc))
+
+        shot_count = body.get("shot_count")
+        if shot_count is not None:
+            try:
+                shot_count = int(shot_count)
+            except (TypeError, ValueError):
+                return _error(422, "invalid_shot_count", "shot_count must be an integer")
+            if shot_count < 1 or shot_count > current.settings.max_shots:
+                return _error(
+                    422,
+                    "shot_count_out_of_range",
+                    f"shot_count must be between 1 and {current.settings.max_shots}",
+                )
+
+        key = (idempotency_key or str(body.get("idempotency_key") or "")).strip()
+
+        # Pre-flight affordability: a refusal here costs zero provider calls and
+        # zero queued work, instead of failing inside the worker.
+        wanted = shot_count if shot_count is not None else brief.shot_count
+        from ..agent.run import CREDITS_PER_PHOTO
+
+        needed = max(0, wanted) * CREDITS_PER_PHOTO
+        if key:
+            replay = current.store.by_idempotency_key(key)
+            if replay is not None:
+                return JSONResponse(status_code=200, content=run_payload(replay, current))
+        balance = current.ledger.balance(account_id)
+        if balance < needed:
+            return _error(
+                402,
+                "insufficient_credits",
+                f"this run needs {needed} credit(s); you have {balance}.",
+                required=needed,
+                available=balance,
+            )
+
+        try:
+            result = await execute_run(
+                deps=current,
+                brief=brief,
+                account_id=account_id,
+                shot_count=shot_count,
+                idempotency_key=key,
+            )
+        except RunInProgress as exc:
+            return _error(409, "run_in_progress", str(exc))
+        except InsufficientCredits as exc:
+            return _error(
+                402,
+                "insufficient_credits",
+                str(exc),
+                required=exc.required,
+                available=exc.available,
+            )
+        except (AgentError, ValueError) as exc:
+            return _error(500, "run_failed", str(exc))
+
+        return JSONResponse(status_code=202, content=run_payload(result.run, current))
+
+    @app.get("/api/v1/runs/{run_id}")
+    async def get_run(run_id: str) -> Any:
+        current = require_deps()
+        run = current.store.get(run_id)
+        if run is None:
+            return _error(404, "run_not_found", f"no run {run_id!r}")
+        return JSONResponse(status_code=200, content=run_payload(run, current))
+
+    @app.get("/api/v1/runs/{run_id}/events")
+    async def run_events(
+        run_id: str,
+        request: Request,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+        last_event_id_query: str | None = Query(default=None, alias="last_event_id"),
+    ) -> Any:
+        current = require_deps()
+        run = current.store.get(run_id)
+        if run is None:
+            return _error(404, "run_not_found", f"no run {run_id!r}")
+
+        # A browser EventSource cannot set headers on reconnect, so the query
+        # parameter is the practical path; the header is the spec path.
+        cursor = parse_last_event_id(
+            last_event_id if last_event_id is not None else last_event_id_query
+        )
+
+        generator = stream_events(deps=current, run=run, last_event_id=cursor)
+        return StreamingResponse(
+            generator,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                # Stops nginx buffering the stream into silence.
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/v1/health")
+    async def health() -> Any:
+        return {"status": "ok", "events_version": "events-v1"}
+
+    return app
+
+
+def _brief_from_body(
+    body: Mapping[str, Any], shoot_id: str, brief_name: str
+) -> ShootBrief:
+    """A golden brief by name, or an inline brief. Inline wins when present."""
+    inline = body.get("brief_payload")
+    if inline is not None:
+        if not isinstance(inline, Mapping):
+            raise ValueError("brief_payload must be an object")
+        payload = dict(inline)
+        payload.setdefault("shoot_id", shoot_id)
+        payload["activities"] = tuple(payload.get("activities") or ())
+        return ShootBrief(**payload)
+    if not brief_name:
+        raise ValueError("provide 'brief' (a brief name) or 'brief_payload'")
+    brief = load_brief(brief_name)
+    if brief.shoot_id != shoot_id:
+        # The path is authoritative: a run is always a run *of this shoot*.
+        brief = ShootBrief(
+            shoot_id=shoot_id,
+            title=brief.title,
+            event=brief.event,
+            venue_name=brief.venue_name,
+            activities=brief.activities,
+            story=brief.story,
+            style_preset=brief.style_preset,
+            shot_count=brief.shot_count,
+        )
+    return brief
+
+
+def _canonical(payload: Any) -> str:
+    return canonical_json(payload)
+
+
+#: `uvicorn app.api:app` in development, once dependencies are injected.
+app: FastAPI | None = None
+
+
+__all__ = [
+    "ApiDependencies",
+    "ProviderBundle",
+    "SSE_KEEPALIVE_POLLS",
+    "SSE_POLL_SECONDS",
+    "build_dependencies",
+    "create_app",
+    "execute_run",
+    "run_payload",
+    "stream_events",
+]
