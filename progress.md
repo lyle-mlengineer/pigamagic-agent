@@ -55,7 +55,12 @@
 | 11 run orchestration + credit ledger | **DONE** | 31 tests; 625 total pass |
 | 12 worker process / queue | **DONE** | 28 tests; 653 total pass |
 | 13 runs API + SSE | **DONE** | 24 tests; 677 total pass |
-| 11+ product shell / API | **NEXT** | sibling repo `pigamagic/backend`; follows Step 14 |
+| 14 feed integration | **DONE** | 23 tests; 700 total pass |
+| 17 comment modes + edit compilation | **DONE** | 38 tests; 738 total pass |
+| 15 real web research | **BLOCKED** | needs a paid search API key |
+| 16 RAG corpus | **BLOCKED** | needs `pgvector` (not installed) |
+| 18 lineage + per-edit credits | **NEXT** | `GET /photos/{id}/lineage` |
+| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; after Steps 18-20 |
 
 ---
 
@@ -893,35 +898,177 @@ cd backend && python -m pytest -q                               # 677 passed
 
 ---
 
-## Current step — 14 Feed integration
+## Completed step — 14 Feed integration
 
-**Goal:** wire generated photos into the existing feed serialisation so streamed
-and settled photos use one card contract.
+**Status: DONE.** Full suite **700 passed** (23 new in `test_feed.py`). Offline, no credentials.
 
-**Done when (steps.md):** a settled photo and a streamed photo produce identical
-card payload shapes, and cursor pagination stays stable while photos are
-inserted.
+### What was built
 
-**Files:** `app/agent/feed.py` (new), `tests/agent/test_feed.py` (new)
+| file | purpose |
+|---|---|
+| `app/agent/feed.py` | `photo_card()` (the one card builder), `failed_card()`, `page_cards()`, cursor encode/decode |
+| `app/api/runs.py` | `cached_cards()`, `GET /api/v1/feed`, `cards` on the run payload |
+| `app/agent/events.py` | `publish_photos` sends the full card with each event |
+| `tests/agent/test_feed.py` | 23 tests, incl. both steps.md gates |
 
-**Builds on:**
-- `render.py` — `RenderedPhoto.as_dict()` is the stored photo shape.
-- `events.py` — the `photo` event payload emitted while streaming.
-- `run.py` — `GenerationRun.photo_ids` is the settled set.
+### The two gates, verified by hand
 
-**Planned actions:**
-1. One `photo_card()` builder used by **both** the SSE `photo` event and
-   `GET /runs/{id}`'s photo list, so the shapes cannot drift.
-2. A test asserting the streamed card and the settled card are equal for the
-   same photo — that is the gate, and it fails loudly if either path is edited
-   alone.
-3. Cursor pagination keyed on `(created_at, photo_id)` so inserting a photo
-   mid-scroll cannot shift a page boundary.
+```
+GATE 1 identical card payloads: True (4 cards)      streamed == settled, byte for byte
+GATE 2 pages: 2 2 | overlap: set()
+       page 2 stable under insert: True
+       shell contract satisfied: True
+```
+
+### Why one builder, and why the test needed two paths
+
+`photo_card()` is the only card builder; the SSE event and `GET /feed`/`/runs/{id}`
+both go through it. The first version of `cached_cards()` simply returned
+`event.data["card"]`, which made the gate **pass by construction** — I proved it
+by injecting a divergent field into the stream and watching all 23 tests stay
+green. The gate was decoration.
+
+`cached_cards()` now **rebuilds** the card from the event's bare photo fields,
+giving the gate two independent paths. Re-running the injection then produced
+`FAILED test_gate_settled_and_streamed_cards_are_identical`, which is what a gate
+is supposed to do. The event payload therefore carries `shoot_id`, `created_at`
+and `parent_id` alongside the card.
+
+The pagination gate was checked the same way: degrading the cursor to
+`created_at`-only made `test_same_timestamp_photos_still_have_a_total_order` and
+`test_walking_the_whole_feed_visits_every_card_once` fail.
+
+### Decisions worth keeping
+
+- **The card is a superset of the shell's `serialize_photo`.** Verified
+  field-by-field against `app/api/common.py` in the sibling repo, including
+  `media_id` (here the content-addressed blob key, since a photo *is* its bytes).
+  A missing field would mean a second frontend component.
+- **Fields are always present, never omitted.** A photo with no likes carries
+  `like_count: 0`, not an absent key — absent keys are how two shapes drift.
+- **`developing` is a field, not a different shape**, so one component renders a
+  streaming card and simply disables the actions via `can_interact`.
+- **Cursor is `(created_at, id)`**, matching the shell's `pagination_filter`. A
+  single-key cursor breaks the moment one run renders several photos in the same
+  second, which is the normal case here.
+- **A corrupt cursor is a 422, not a silent restart** — restarting looks like a
+  refresh and produces duplicate cards.
+- **Node order for live cards**, not timestamp order: the first four cards decide
+  whether the user keeps scrolling, so a fast-rendering shot must not jump ahead
+  of the opening frame.
+- **Failed shots get a card too**, so the feed has no unexplained gap, and it
+  shares the photo-card shape except for `reason`/`refunded`.
 
 **Verify command:**
 ```bash
-cd backend && python -m pytest -q tests/agent/test_feed.py
-cd backend && python -m pytest -q      # expect 677 + new
+cd backend && python -m pytest -q tests/agent/test_feed.py   # 23 passed
+cd backend && python -m pytest -q                            # 700 passed
+```
+
+---
+
+## Completed step — 17 Comment modes and edit compilation
+
+**Status: DONE.** Full suite **738 passed** (38 new in `test_comments.py`). Offline.
+
+> Reached out of order: Step 15 needs a paid search API key and Step 16 needs
+> `pgvector` (not installed). Step 17 continues the product chain with neither.
+
+### What was built
+
+| file | purpose |
+|---|---|
+| `app/agent/comments.py` | `Comment` (with `mode`), `classify_change()`, `compile_edit()`, `chain()`, `route_comment()`, `instruction_key()` |
+| `tests/agent/test_comments.py` | 38 tests, incl. all three steps.md gates |
+
+`EditInstruction` already existed in `plan.py` with its `preserves` safety net
+and was reused unchanged.
+
+### The three gates, verified by hand
+
+```
+GATE 1 change: lighting | preserves: [identity, venue, wardrobe]
+       changes only lighting: True | preserves intact: True
+GATE 2 child preserves parent identity: True
+       chained detail: brighter; then move closer; then warmer light
+GATE 3 same bytes -> True | changed bytes -> False
+```
+
+GATE 3 also runs the **real** path — `render_plan` → `render_edit` → re-read the
+parent's bytes from `LocalBlobStore` — and asserts the bytes are equal, the child
+has a new id, and `parent_id` points at the original.
+
+### The compiler is deterministic, deliberately
+
+`preserves` is a **safety** list. If an LLM generated it, one hallucination drops
+`wardrobe` and the next render restyles the dress — the trust violation
+design.md §11.1 exists to prevent. So the change *kind* is keyword-classified and
+every field the user did not ask about is carried forward.
+
+### Bugs found and fixed
+
+1. **`ALWAYS_PRESERVED` was missing `wardrobe`.** I had `("identity", "venue")`,
+   but design.md §11.1 says `preserves` carries the person keys and venue anchors
+   so "make me smile more" cannot change her dress. The gate caught it
+   immediately (`preserves_field('wardrobe')` was False).
+2. **Chained `detail` accumulated quadratically.** Each child prefixes its
+   parent's *already cumulative* detail, and `chain()` then joined every step
+   again, producing
+   `"brighter then brighter; then move closer then brighter; then move closer; then warmer light"`.
+   No test caught it — I saw it in the by-hand output. `chain()` now prefers the
+   last cumulative detail, and a test pins the exact string.
+3. **`ShotSpec` fixture used `dof`** instead of the real `depth_of_field`, so 20
+   tests errored at construction rather than on their assertion.
+4. **The chain gate passed vacuously at first.** With `wardrobe` in
+   `ALWAYS_PRESERVED`, dropping parent inheritance still passed, because the
+   inherited fields were re-added by default. The gate now uses a preserve that
+   exists *only* on the parent (`album`); deleting the inheritance line then fails
+   it, which I verified.
+
+### Routing keeps "feedback" free
+
+`route_comment()` is the single entry point and returns `enqueues_job: False` with
+`edit_instruction: None` for feedback, so "love this one" cannot spend a credit.
+An ambiguous edit (`"can you fix this"`) classifies as `None` and raises with an
+actionable message naming examples — guessing is how a vague comment silently
+becomes a wardrobe change the user never asked for.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_comments.py   # 38 passed
+cd backend && python -m pytest -q                                # 738 passed
+```
+
+---
+
+## Current step — 18 Lineage, compare and per-edit credits
+
+**Goal:** `GET /photos/{id}/lineage`, compare payloads, independent credit
+reservation per edit (FR-7.5, FR-7.6).
+
+**Done when (steps.md):** a photo has ≥2 siblings retrievable, and each edit
+appears as its own ledger line.
+
+**Files:** `app/agent/lineage.py` (new), `app/api/photos.py` (new),
+`tests/agent/test_lineage.py` (new)
+
+**Builds on:**
+- `render_edit()` — already sets `parent_id`, so lineage exists in the data.
+- `comments.py` — `chain()` folds a lineage into one instruction.
+- `ledger.py` — `reserve`/`settle` already work per run; an edit needs its own.
+
+**Planned actions:**
+1. `lineage.py` — build a tree from `parent_id`, and the compare payload (parent
+   vs child: what changed, what `preserves` held).
+2. `GET /photos/{id}/lineage` returning siblings and the root, so a user can see
+   every take and delete the ones they dislike.
+3. A credit reservation per edit, keyed on `instruction_key()`, so a retried
+   edit does not charge twice.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_lineage.py
+cd backend && python -m pytest -q      # expect 738 + new
 ```
 
 ---
@@ -960,14 +1107,19 @@ this repo.
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 677 passed
+cd backend && python -m pytest -q      # expect 738 passed
 cd backend && git log --oneline -5     # latest work
 ```
 
-State to trust: **Steps 0.1–13 are complete and green.** The agent layer
+State to trust: **Steps 0.1–14 and 17 are complete and green.** The agent layer
 (analyse → research → compile → prompt → render → store, safety-gated, credited,
-queue-backed, streamed over SSE) is finished and fully offline-verifiable. All 13
+queue-backed, streamed over SSE into one feed card contract, with comments
+compiled into safe edit deltas) is finished and fully offline-verifiable. All 13
 event packs have a golden brief.
+
+Step order note: 14 → 17 was intentional. Step 15 needs a paid search API key and
+Step 16 needs `pgvector`, neither of which is available; Step 17 continues the
+product chain with neither.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`

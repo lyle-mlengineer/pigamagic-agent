@@ -44,6 +44,14 @@ from ..agent.events import (
     parse_last_event_id,
     sse_frame,
 )
+from ..agent.feed import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    FeedError,
+    cards_for_outcome,
+    page_cards,
+    photo_card,
+)
 from ..agent.hashing import canonical_json
 from ..agent.ledger import CreditLedger, InsufficientCredits
 from ..agent.pipeline import BriefNotFound, load_brief
@@ -140,15 +148,51 @@ def build_dependencies(
 def run_payload(run: GenerationRun, deps: ApiDependencies | None = None) -> dict[str, Any]:
     """The `GET /runs/{id}` body. Additive over `run.as_dict()`.
 
-    `photo_urls` is derived here rather than stored, so the URL scheme can change
-    without a migration and a stored photo never carries a stale absolute host.
+    `cards` are built by the same `photo_card()` the SSE stream uses, so a
+    settled card and a streamed card cannot diverge (steps.md Step 14).
     """
     body = run.as_dict()
     body["events_url"] = f"/api/v1/runs/{run.run_id}/events"
     body["photo_urls"] = {
         photo_id: _media_url(deps, photo_id) for photo_id in run.photo_ids
     }
+    body["cards"] = cached_cards(deps, run.run_id) if deps is not None else []
     return body
+
+
+def cached_cards(deps: "ApiDependencies", run_id: str) -> list[dict[str, Any]]:
+    """Cards for a run, rebuilt from its `photo` events with `photo_card()`.
+
+    Rebuilt rather than reused on purpose. Returning `event.data["card"]` would
+    make the settled and streamed shapes agree *by construction*, so the Step 14
+    gate would pass even if the stream had quietly invented its own shape. This
+    re-derives the card from the photo fields, which gives the gate two
+    independent paths to compare.
+    """
+    cards: list[dict[str, Any]] = []
+    for event in deps.events.events_after(run_id, 0):
+        if event.kind != "photo":
+            continue
+        data = event.data
+        cards.append(
+            photo_card(
+                {
+                    "photo_id": data.get("photo_id", ""),
+                    "shoot_id": data.get("shoot_id", ""),
+                    "node_id": data.get("node_id", ""),
+                    "moment": data.get("moment", ""),
+                    "activity": data.get("activity", ""),
+                    "framing": data.get("framing", ""),
+                    "caption": data.get("caption", ""),
+                    "blob": {"key": data.get("blob_key", "")},
+                    "created_at": data.get("created_at", ""),
+                    "parent_id": data.get("parent_id"),
+                },
+                media_url_template=deps.media_url_template,
+                developing=bool(data.get("developing", False)),
+            )
+        )
+    return cards
 
 
 def _media_url(deps: ApiDependencies | None, key_or_id: str) -> str:
@@ -443,7 +487,57 @@ def create_app(deps: ApiDependencies | None = None) -> FastAPI:
     async def health() -> Any:
         return {"status": "ok", "events_version": "events-v1"}
 
+    @app.get("/api/v1/feed")
+    async def get_feed(
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> Any:
+        """The settled feed: every card from every finished run, newest first.
+
+        Paginated with an `(created_at, id)` cursor, so a photo inserted by a
+        live run cannot shift a page boundary (FR-5.6). The next cursor is in
+        the body and in `X-Next-Cursor`, matching the shell's convention.
+        """
+        current = require_deps()
+        limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+
+        all_cards: list[dict[str, Any]] = []
+        for run in _all_runs(current):
+            all_cards.extend(cached_cards(current, run.run_id))
+
+        try:
+            page, next_cursor = page_cards(all_cards, limit=limit, cursor=cursor)
+        except FeedError as exc:
+            return _error(422, "invalid_cursor", str(exc))
+
+        headers = {"X-Next-Cursor": next_cursor} if next_cursor else {}
+        return JSONResponse(
+            status_code=200,
+            content={
+                "items": page,
+                "next_cursor": next_cursor,
+                "has_more": next_cursor is not None,
+            },
+            headers=headers,
+        )
+
     return app
+
+
+def _all_runs(deps: "ApiDependencies") -> list[GenerationRun]:
+    """Every run known to the store.
+
+    The protocol only exposes point lookups, so discovery is delegated to the
+    store when it can enumerate and otherwise derived from the event log (every
+    run that ever published an event).
+    """
+    listed = getattr(deps.store, "list_runs", None)
+    if callable(listed):
+        return list(listed())
+    run_ids = getattr(deps.events, "run_ids", None)
+    if callable(run_ids):
+        return [run for run in (deps.store.get(rid) for rid in run_ids()) if run]
+    return []
 
 
 def _brief_from_body(
@@ -490,6 +584,7 @@ __all__ = [
     "SSE_KEEPALIVE_POLLS",
     "SSE_POLL_SECONDS",
     "build_dependencies",
+    "cached_cards",
     "create_app",
     "execute_run",
     "run_payload",

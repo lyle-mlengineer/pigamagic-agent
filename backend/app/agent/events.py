@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Literal, Protocol
 
+from .feed import photo_card
+
 EVENTS_VERSION = "events-v1"
 
 EventKind = Literal["run", "photo", "photo_failed", "run_done", "warning"]
@@ -224,6 +226,11 @@ class EventRecorder:
                 # No photo is delivered twice, even if the caller replays.
                 continue
             seen.add(photo_id)
+            card = photo_card(
+                photo,
+                media_url_template="/api/v1/media/{key}",
+                developing=bool(photo.get("developing", False)),
+            )
             event = self.log.append(
                 self.run_id,
                 "photo",
@@ -236,7 +243,16 @@ class EventRecorder:
                     "framing": photo.get("framing", ""),
                     "subjects": list(photo.get("subjects") or []),
                     "blob_key": (photo.get("blob") or {}).get("key", ""),
-                    "image_url": _image_url((photo.get("blob") or {}).get("key", "")),
+                    "image_url": card["image_url"],
+                    # The card travels with the event, so a streaming client
+                    # renders exactly what a settled client renders. The bare
+                    # fields travel too, so a settling reader can rebuild the
+                    # card independently instead of trusting this one.
+                    "shoot_id": str(photo.get("shoot_id") or ""),
+                    "created_at": str(photo.get("created_at") or ""),
+                    "parent_id": photo.get("parent_id"),
+                    "developing": bool(photo.get("developing", False)),
+                    "card": card,
                 },
             )
             appended.append(event)
@@ -300,7 +316,10 @@ def _done_brief(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _image_url(blob_key: str) -> str:
-    """Media URL for a stored photo. Empty key -> empty URL, never a broken one."""
+    """Media URL for a stored photo. Empty key -> empty URL, never a broken one.
+
+    Kept for the `image_url` field on events built outside `photo_card`.
+    """
     if not blob_key:
         return ""
     return f"/api/v1/media/{blob_key}"

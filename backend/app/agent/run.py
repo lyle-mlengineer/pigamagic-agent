@@ -201,6 +201,14 @@ class InMemoryRunStore:
     def track_shoot(self, run: GenerationRun) -> None:
         self._by_shoot[run.shoot_id] = run.run_id
 
+    def list_runs(self) -> list[GenerationRun]:
+        """All runs, newest first. Used by the feed to enumerate cards."""
+        return sorted(
+            self._runs.values(),
+            key=lambda run: (run.created_at, run.run_id),
+            reverse=True,
+        )
+
 
 def new_run_id(brief: ShootBrief, *, attempt: str = "") -> str:
     """Content-derived run id, so the same brief + key is the same run."""
