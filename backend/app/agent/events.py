@@ -140,6 +140,14 @@ class InMemoryEventLog:
     def run_ids(self) -> list[str]:
         return sorted(self._events)
 
+    def delete(self, run_id: str) -> bool:
+        """Drop one run's stream. Used by the account purge (SR-5).
+
+        A purged run's events must go with it: an SSE replay of a deleted run is
+        the same privacy failure as serving the deleted photo.
+        """
+        return self._events.pop(run_id, None) is not None
+
 
 def parse_last_event_id(raw: str | int | None) -> int:
     """Parse a `Last-Event-ID` header.

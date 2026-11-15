@@ -62,6 +62,7 @@ from ..agent.lineage import (
 from ..agent.hashing import canonical_json
 from ..agent.ledger import CreditLedger, InsufficientCredits
 from ..agent.pipeline import BriefNotFound, load_brief
+from ..agent.purge import FlagRegistry, purge_account as purge_account_rows
 from ..agent.providers.base import AgentError
 from ..agent.run import (
     GenerationRun,
@@ -72,6 +73,7 @@ from ..agent.run import (
     start_run,
 )
 from ..agent.worker import InMemoryJobQueue, enqueue_run_job
+from .admin import install_admin_routes
 
 #: How long an SSE connection waits for new events before emitting a comment
 #: keep-alive. Long enough to be cheap, short enough to hold the socket open
@@ -105,6 +107,10 @@ class ApiDependencies:
     queue: InMemoryJobQueue | None = None
     #: Delivered photos, for lineage/compare. Defaults to an in-memory store.
     photos: PhotoStore | None = None
+    #: Photo flag state (SR-4). A flagged photo is unreachable publicly.
+    flags: FlagRegistry | None = None
+    #: Reference analyses, so an account purge deletes derived data too (SR-5).
+    analyses: Any = None
     #: Blob bytes are already persisted content-addressed, so a URL is enough.
     media_url_template: str = "/api/v1/media/{key}"
     #: Called with the finished `RunResult` so the shell can persist artifacts.
@@ -113,6 +119,31 @@ class ApiDependencies:
     @property
     def event_store(self) -> EventLog:
         return self.events
+
+    @property
+    def flag_registry(self) -> FlagRegistry:
+        """Flag state, lazily created so a read-only app carries no extra state."""
+        if self.flags is None:
+            self.flags = FlagRegistry()
+        return self.flags
+
+    async def purge(self, account_id: str) -> Any:
+        """Delete everything held about an account (SR-5).
+
+        Lives on the dependencies rather than the route so the same call is
+        usable from a CLI, a support script or an account-deletion worker — the
+        deletion path is too important to exist only behind one HTTP verb.
+        """
+        return await purge_account_rows(
+            account_id,
+            ledger=self.ledger,
+            runs=self.store,
+            events=self.events,
+            photos=self.photo_store,
+            blobs=self.providers.blobs,
+            analyses=self.analyses,
+            flags=self.flags,
+        )
 
     @property
     def photo_store(self) -> PhotoStore:
@@ -141,6 +172,8 @@ def build_dependencies(
     store: RunStore | None = None,
     events: EventLog | None = None,
     photos: PhotoStore | None = None,
+    flags: FlagRegistry | None = None,
+    analyses: Any = None,
     providers: ProviderBundle | None = None,
 ) -> ApiDependencies:
     """Wire the API with sensible defaults; override any part in tests."""
@@ -148,12 +181,19 @@ def build_dependencies(
     if providers is None:
         raise ValueError("build_dependencies needs a ProviderBundle (llm/vision/web/image/blobs)")
     return ApiDependencies(
-        ledger=ledger or CreditLedger(),
-        store=store or InMemoryRunStore(),
-        events=events or InMemoryEventLog(),
+        # `is None`, not `or`: a store that defines `__len__` is falsy when empty,
+        # and `x or Default()` would silently discard a caller-supplied store.
+        ledger=ledger if ledger is not None else CreditLedger(),
+        store=store if store is not None else InMemoryRunStore(),
+        events=events if events is not None else InMemoryEventLog(),
         settings=active,
         providers=providers,
-        photos=photos or InMemoryPhotoStore(),
+        photos=photos if photos is not None else InMemoryPhotoStore(),
+        # `or` would be wrong here: `FlagRegistry` defines `__len__`, so an empty
+        # registry is falsy and `flags or FlagRegistry()` silently discarded the
+        # caller's registry — flags written to it would never be read by the app.
+        flags=flags if flags is not None else FlagRegistry(),
+        analyses=analyses,
         queue=InMemoryJobQueue(),
     )
 
@@ -174,7 +214,17 @@ def run_payload(run: GenerationRun, deps: ApiDependencies | None = None) -> dict
     body["photo_urls"] = {
         photo_id: _media_url(deps, photo_id) for photo_id in run.photo_ids
     }
-    body["cards"] = cached_cards(deps, run.run_id) if deps is not None else []
+    if deps is not None:
+        # A flagged photo is private everywhere, and the run view is a public
+        # route: it must not become the one place a card leaks through (SR-4).
+        flagged = deps.flag_registry
+        body["cards"] = [
+            card
+            for card in cached_cards(deps, run.run_id)
+            if not flagged.blocked(str(card.get("id") or ""))
+        ]
+    else:
+        body["cards"] = []
     return body
 
 
@@ -302,7 +352,15 @@ async def execute_run(
         for photo in outcome.photos:
             # Idempotent for an identical photo; `put` raises for a conflicting
             # one, which is deliberate and must not be swallowed.
-            deps.photo_store.put(photo.as_dict())
+            #
+            # The owning account is stamped here, at the API boundary, not in
+            # `render_plan`: rendering is a pure plan→bytes operation that has no
+            # notion of who asked. Stamping at registration is also what makes
+            # the account purge able to find these rows at all (SR-5).
+            record = photo.as_dict()
+            record["account_id"] = account_id
+            record["run_id"] = result.run.run_id
+            deps.photo_store.put(record)
         recorder.publish_photos(photo.as_dict() for photo in outcome.photos)
         recorder.publish_failures(outcome.failures)
     done = deferred_done if deferred_done is not None else result.run.as_dict()
@@ -349,6 +407,13 @@ async def stream_events(
         pending = deps.events.events_after(run.run_id, cursor)
         for event in pending:
             cursor = event.seq
+            if event.kind == "photo" and deps.flag_registry.blocked(
+                str(event.data.get("photo_id") or "")
+            ):
+                # A flagged photo is private on the live stream too, not only in
+                # the settled feed. The event is counted as read so the stream
+                # advances rather than replaying it forever (SR-4).
+                continue
             yield sse_frame(event=event.kind, data=event.data, event_id=event.seq)
         if pending:
             idle = 0
@@ -520,6 +585,9 @@ def create_app(deps: ApiDependencies | None = None) -> FastAPI:
         takes are its edits, so both cases return the whole family.
         """
         current = require_deps()
+        denied = _blocked(current, photo_id)
+        if denied is not None:
+            return denied
         try:
             tree = lineage_tree(current.photo_store, photo_id)
         except LineageError as exc:
@@ -530,6 +598,9 @@ def create_app(deps: ApiDependencies | None = None) -> FastAPI:
     async def get_compare(photo_id: str) -> Any:
         """Parent vs child: what this edit changed and what it preserved."""
         current = require_deps()
+        denied = _blocked(current, photo_id)
+        if denied is not None:
+            return denied
         try:
             payload = compare_with_parent(current.photo_store, photo_id)
         except LineageError as exc:
@@ -553,7 +624,13 @@ def create_app(deps: ApiDependencies | None = None) -> FastAPI:
 
         all_cards: list[dict[str, Any]] = []
         for run in _all_runs(current):
-            all_cards.extend(cached_cards(current, run.run_id))
+            all_cards.extend(
+                card
+                for card in cached_cards(current, run.run_id)
+                # A flagged photo is private: it must not reach the feed any
+                # more than it reaches its own media URL (SR-4).
+                if not current.flag_registry.blocked(str(card.get("id") or card.get("photo_id") or ""))
+            )
 
         try:
             page, next_cursor = page_cards(all_cards, limit=limit, cursor=cursor)
@@ -571,7 +648,20 @@ def create_app(deps: ApiDependencies | None = None) -> FastAPI:
             headers=headers,
         )
 
+    install_admin_routes(app, require_deps)
+
     return app
+
+
+def _blocked(deps: "ApiDependencies", photo_id: str) -> Any | None:
+    """Refuse a photo the safety classifier flagged (SR-4).
+
+    A 404, not a 403: the existence of a flagged photo is itself information
+    about a person, so the route behaves exactly as if it were never there.
+    """
+    if not deps.flag_registry.blocked(photo_id):
+        return None
+    return _error(404, "photo_not_found", f"no photo {photo_id!r}")
 
 
 def _all_runs(deps: "ApiDependencies") -> list[GenerationRun]:

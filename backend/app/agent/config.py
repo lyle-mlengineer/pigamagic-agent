@@ -144,6 +144,12 @@ class AgentSettings(BaseSettings):
     # Offline mode forbids any outbound HTTP. Fixture providers stay usable.
     offline: bool = False
 
+    # --- Admin surface ------------------------------------------------------
+    # Shared secret for `/api/v1/admin/*`. Empty means the admin routes are
+    # **disabled**: an unset token must never mean "open to everyone", which is
+    # the classic way a review console leaks every flagged photo.
+    admin_token: str = ""
+
     @field_validator("prompt_version")
     @classmethod
     def _non_empty_prompt_version(cls, value: str) -> str:

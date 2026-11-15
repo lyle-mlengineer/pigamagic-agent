@@ -66,6 +66,10 @@ class PhotoStore(Protocol):
 
     def all_photos(self) -> list[dict[str, Any]]: ...
 
+    def delete(self, photo_id: str) -> bool:
+        """Remove one photo row. Required for account deletion (SR-5)."""
+        ...
+
 
 class InMemoryPhotoStore:
     """Default store. Appends only — a delivered photo is never replaced."""
@@ -104,6 +108,26 @@ class InMemoryPhotoStore:
 
     def all_photos(self) -> list[dict[str, Any]]:
         return list(self._photos.values())
+
+    def delete(self, photo_id: str) -> bool:
+        """Remove one photo row and its parent index entry.
+
+        Deliberately *not* the tree-aware `delete_take`: a purge removes a whole
+        account, so orphaning rules that protect a live family do not apply. The
+        caller (`purge_account`) deletes every photo the account owns.
+        """
+        record = self._photos.pop(photo_id, None)
+        if record is None:
+            return False
+        parent_id = str(record.get("parent_id") or "")
+        if parent_id and parent_id in self._by_parent:
+            siblings = [child for child in self._by_parent[parent_id] if child != photo_id]
+            if siblings:
+                self._by_parent[parent_id] = siblings
+            else:
+                del self._by_parent[parent_id]
+        self._by_parent.pop(photo_id, None)
+        return True
 
 
 # --------------------------------------------------------------------------

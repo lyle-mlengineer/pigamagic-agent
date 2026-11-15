@@ -60,8 +60,9 @@
 | 15 real web research | **BLOCKED** | needs a paid search API key |
 | 16 RAG corpus | **BLOCKED** | needs `pgvector` (not installed) |
 | 18 lineage + per-edit credits | **DONE** | 28 tests; 766 total pass |
-| 19 eval harness | **NEXT** | identity/coverage/cost assertions on golden briefs |
-| 11+ product shell / API | **PENDING** | sibling repo `pigamagic/backend`; after Steps 19-20 |
+| 19 eval harness | **DONE** | 33 tests; 799 total pass |
+| 20 safety console + purge paths | **DONE** | 25 tests; 824 total pass |
+| 11+ product shell / API | **BLOCKED** | sibling repo `pigamagic/backend`; after Step 20 |
 
 ---
 
@@ -1121,33 +1122,212 @@ cd backend && python -m pytest -q                               # 766 passed
 
 ---
 
-## Current step — 19 Eval harness in CI
+## Completed step — 19 Eval harness in CI
 
-**Goal:** automated identity, coverage, prompt-stability and cost assertions on
-golden briefs.
+**Status: DONE.** Full suite **799 passed** (33 new in `test_eval.py`). Offline, no credentials.
 
-**Done when (steps.md):** the harness fails loudly when a prompt change degrades
-identity score below threshold.
+### What was built
 
-**Files:** `app/agent/eval.py` (new), `tests/agent/test_eval.py` (new)
+| file | purpose |
+|---|---|
+| `app/agent/eval.py` | `evaluate()`, the four metric scorers, `EvalReport`, `assert_eval()` |
+| `app/agent/cli.py` | `python -m app.agent.cli eval` — the CI entry point, exit 1 on failure |
+| `tests/agent/test_eval.py` | 33 tests, incl. the steps.md gate and the CLI exit codes |
 
-**Builds on:**
-- `pipeline.py` — `ShootArtifact.digest()` and the 13 golden briefs.
-- `prompts.py` — golden prompt files already gate text drift.
-- `conventions.py` — coverage expectations come from the packs.
-- `ledger.py` — `CREDITS_PER_PHOTO` and cost estimates.
+### The gate, demonstrated
 
-**Planned actions:**
-1. `eval.py` — one harness computing identity, coverage, prompt-stability and
-   cost metrics over every golden brief, with explicit thresholds.
-2. An identity score that **actually moves** when a prompt degrades (e.g. identity
-   block dropped or reference notes truncated), so the gate is not decoration.
-3. A cost ceiling per brief, so a prompt change that inflates token counts fails.
+```
+$ python -m app.agent.cli eval
+golden-wedding: PASS (10 shots)
+  [ok  ] identity          1.000  10/10 anchored, 10/10 described
+  [ok  ] coverage          1.000  3 people, 4 activities
+  [ok  ] prompt_stability  1.000  10 prompt(s), 5 required sections
+  [ok  ] cost              1.000  3124 tokens total, 335 worst, 10 credit(s)
+All 13 brief(s) passed.                                             EXIT=0
+
+$ python -m app.agent.cli eval --brief wedding --max-prompt-tokens 120 --quiet
+1 of 1 brief(s) FAILED the eval gate.                               EXIT=1
+```
+
+### Why identity is scored structurally, not with a face model
+
+design.md §8.3 scores identity with a face embedding, and §8.3 plus NFR-9 are
+explicit that embeddings are **ephemeral** — "compared, scored, then discarded.
+They are not stored."
+
+In CI there is no image or face model, so a similarity number would either be
+fabricated or skipped. A gate that always reports 0.94 teaches everyone to ignore
+it. So the harness scores what actually decides face fidelity and what a prompt
+change can break:
+
+- identity references present (prompt text alone cannot hold a face)
+- references **scoped to the people in frame** (off-frame faces dilute every real one)
+- the cast description reaching the prompt (hair/build/skin/wardrobe)
+- the reference block **not truncated** (identity is dropped first under a budget)
+
+`IdentityScore` holds only counts and flags, and its dict asserts
+`embedding_persisted: False` — NFR-9 enforced at the data structure, not by
+convention.
+
+### The gate is not decoration
+
+Every degradation was injected and the gate was confirmed to fail:
+
+| injected regression | fails |
+|---|---|
+| no identity references | identity (score 0.50, below 0.80 threshold) |
+| truncation at a 120-token budget | identity ("truncated" names all 10 nodes) |
+| whole `[SUBJECTS]` block removed | prompt_stability **and** identity |
+| prompt padded to 2× length | cost (over the token ceiling) |
+| an activity's shots deleted | coverage (names the missing activity) |
+| threshold check disabled | the gate test itself |
+
+### Bugs found and fixed
+
+1. **`references_by_node={}` was treated as "not supplied".** The check was
+   `if references_by_node else None`, so an empty dict fell through to "assume
+   every subject is anchored" and an entirely unreferenced shoot scored 1.0. Now
+   `is None` distinguishes "no information" from "no references", and a test pins
+   the empty-map case.
+2. **The overscoping penalty was too weak to matter.** A flat `* 0.9` multiplier
+   left a fully diluting shoot at 1.0 — the penalty did not scale with the damage.
+   Now `1 - 0.5 * (diluted / total)`, so full dilution lands at 0.50 (below
+   threshold) and partial dilution scales proportionally.
+3. **The truncation test could have skipped silently.** It had a `pytest.skip`
+   branch, which is exactly the failure mode a harness must not have — a gate
+   that quietly stops testing. Replaced with an assertion that truncation
+   actually occurred.
+4. **`_build()` called without `prompt_budget`** — the new CLI command crashed
+   with a `TypeError` instead of scoring anything. Caught by running the command
+   rather than trusting the tests.
+5. **My first tamper helper removed the `[SUBJECTS]` header but left its lines**,
+   so the "dropped a section" test passed for the wrong reason. Fixed to remove
+   the whole block, and it now fails both stability and identity as intended.
+
+### A note on the 1.000 scores
+
+All 13 briefs scoring exactly 1.000 is a *ceiling by construction*: the fixture
+pipeline always attaches scoped references and always renders the cast
+description. That is why every test above injects a regression rather than
+asserting the happy number — the number alone would be untrustworthy.
 
 **Verify command:**
 ```bash
-cd backend && python -m pytest -q tests/agent/test_eval.py
-cd backend && python -m pytest -q      # expect 766 + new
+cd backend && python -m pytest -q tests/agent/test_eval.py   # 33 passed
+cd backend && python -m app.agent.cli eval                   # exit 0, 13 briefs
+cd backend && python -m pytest -q                            # 799 passed
+```
+
+---
+
+## Completed step — 20 Safety review console and purge paths
+
+**Status: DONE.** Full suite **824 passed** (25 new in `test_purge.py`). Offline,
+no credentials, no spend.
+
+### What was built
+
+| file | purpose |
+|---|---|
+| `app/agent/purge.py` | `purge_account()`, `PurgeReport`, `FlagRegistry`, `FlagEntry`, `review_queue()`, `review_card()` |
+| `app/api/admin.py` | `GET /admin/flags`, `GET/POST /admin/flags/{photo_id}`, `POST /admin/purge/{account_id}` |
+| `app/api/runs.py` | flag filtering on **all four** public read paths; `ApiDependencies.purge()` |
+| `app/agent/{run,lineage,events,ledger}.py` | `delete()` / `purge_account()` on each store |
+| `app/agent/analyze.py` | analyses attributed per account, `purge_account()` |
+| `app/agent/config.py` | `admin_token` |
+| `tests/agent/test_purge.py` | 25 tests |
+
+### The gate, demonstrated by hand against the real routes
+
+```
+before flagging:  lineage 200, feed 4 items
+after flagging:   lineage 404, compare 404, feed 3 items, /runs/{id} 3 cards, SSE 3 photos
+admin, no token:  401
+admin queue:      1 item carrying plan_node + prompt
+purge report:     runs 1, events 1, photos 4, analyses 1, blobs 4, ledger 2
+after purge:      0 photo rows, 0 blobs on disk, run row gone, 0 ledger rows, 0 analyses, queue 0
+```
+
+### Design decisions worth keeping
+
+- **The purge reports counts, not `{"ok": true}`.** A deletion you cannot verify
+  is a deletion you cannot claim, so `PurgeReport` carries per-store numbers and
+  the route returns them.
+- **Blobs are deleted only when no surviving photo still references them.** Photo
+  ids are content hashes, so two accounts *can* share one blob. A blunt
+  delete-per-account would blank a file another account's feed still shows — a
+  data-loss bug wearing a compliance hat. Retained blobs are counted in
+  `blobs_retained` rather than hidden.
+- **A photo with no owner field is not deleted.** It is not provably this
+  account's, and deleting a stranger's delivery during a purge is far worse than
+  leaving a row for an operator to look at.
+- **A store that cannot delete raises.** `purge_account` refuses to run against a
+  `RunStore`/`PhotoStore`/`EventLog` without `delete()`, because a purge that
+  silently does nothing is the exact compliance failure it exists to prevent.
+- **Purge order is innermost-out**: photos → blobs → analyses → events → runs →
+  ledger → flags. Ledger last, so a mid-purge failure leaves the charge visible
+  instead of granting free credits on a half-finished deletion.
+- **The ledger balance is deleted, not zeroed.** A balance is derived from
+  entries; leaving a `0` implies an account that still exists, and a later
+  `grant` would silently reactivate it.
+- **Admin routes are disabled, not open, when no token is set.** An unset secret
+  must never mean "everyone", which is the classic way a review console leaks
+  every flagged photo. The 503 names the setting to fix.
+- **A flagged photo returns 404, not 403.** Its existence is itself information
+  about a person, so the route behaves as though it were never there.
+- **Removal is terminal.** A reviewer who decides a photo must not exist should
+  not be able to have it reinstated by a later request; the registry refuses
+  with an explanation.
+- **The review payload carries the plan node and prompt**, not just an image and
+  a rule code. A reviewer deciding whether a photo is acceptable needs the
+  instruction that produced it — otherwise the console is a rubber stamp.
+
+### Bugs found and fixed
+
+1. **A flagged photo was still public on three of four read paths.**
+   `GET /runs/{run_id}` returned the card and the SSE stream replayed the photo
+   event. Caught by the gate test, then fixed by filtering in `run_payload` *and*
+   in `stream_events` (where the event is still counted as read, so the stream
+   advances instead of replaying it forever).
+2. **`build_dependencies` silently discarded the caller's flag registry.** It
+   read `flags or FlagRegistry()`, and `FlagRegistry` defines `__len__` — so an
+   **empty** registry is falsy and the caller's object was replaced. Any flag
+   written through the caller's handle was written into an object the app never
+   read, meaning **flagged photos stayed public**. The tests passed only because
+   they touched `deps.flag_registry` (the stored object) instead of the handle
+   they passed in. Found by the by-hand check, not by a test — now fixed to
+   `is None` for every store, with a regression test that fails on the old code.
+3. **Photos carried no `account_id`**, so the purge found nothing to delete.
+   `render_plan` is a pure plan→bytes operation with no notion of who asked, so
+   the owner is stamped at the API boundary in `execute_run`, where it also
+   records `run_id`.
+
+### Gates proven non-vacuous
+
+Each regression the gates exist to catch was injected and confirmed to fail:
+
+| injected regression | fails |
+|---|---|
+| `run_payload` stops filtering flagged cards | `test_gate_flagged_photo_is_unreachable_on_every_public_route` |
+| the SSE stream stops filtering | same gate |
+| purge stops calling `blobs.delete` | `test_gate_account_purge_removes_every_artefact` |
+| `flags or FlagRegistry()` restored | `test_build_dependencies_keeps_the_caller_supplied_flag_registry` |
+
+### Test bugs found too
+
+- `_flag()` accepted a `created_at` argument and then hard-coded it, so the
+  ordering test was silently testing constant timestamps. Fixed the helper.
+- `ledger.reserve()` takes no `node_ids`; the test was written against an
+  invented signature.
+- My first shared-blob test used a wrapper store whose `all_photos()` re-injected
+  the retained photo *after* it had been deleted from the inner store, so
+  retention was always 0. Replaced with a pre-seeded second-account photo, which
+  is what the real content-addressed store produces anyway.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_purge.py   # 25 passed
+cd backend && python -m pytest -q                              # 824 passed
 ```
 
 ---
@@ -1186,22 +1366,39 @@ this repo.
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q      # expect 766 passed
+cd backend && python -m pytest -q      # expect 824 passed
+cd backend && python -m app.agent.cli eval   # exit 0 = eval gate passes
 cd backend && git log --oneline -5     # latest work
 ```
 
-State to trust: **Steps 0.1–14, 17 and 18 are complete and green.** The agent layer
+State to trust: **Steps 0.1–14 and 17–20 are complete and green.** The agent layer
 (analyse → research → compile → prompt → render → store, safety-gated, credited,
 queue-backed, streamed over SSE into one feed card contract, comments compiled into
-safe edit deltas, lineage/compare with per-edit credits) is finished and fully
-offline-verifiable. All 13 event packs have a golden brief.
+safe edit deltas, lineage/compare with per-edit credits, a CI eval gate over every
+golden brief, and a flag-review console plus a verified account purge) is finished
+and fully offline-verifiable. All 13 event packs have a golden brief.
 
-Step order note: 14 → 17 → 18 was intentional. Step 15 needs a paid search API key and
-Step 16 needs `pgvector`, neither of which is available; 17 and 18 continue the
-product chain with neither.
+**Milestone 6 (hardened and safe) is complete.** Steps 15 and 16 remain blocked on
+outside dependencies (a paid search API key; `pgvector`), and neither blocks the
+remaining work.
+
+Step order note: 14 → 17 → 18 → 19 → 20 was intentional. Step 15 needs a paid search
+API key and Step 16 needs `pgvector`, neither of which is available.
+
+### Next: product shell integration
+
+Step 11+ in the table is the remaining piece: wiring this agent layer into
+`D:\git\potfolio\pigamagic\backend`. See the **Following step** section above for
+the four planned actions (persist `ShootArtifact`/`RenderOutcome`, SSE over persisted
+state, the credit ledger behind the existing `credits`/`payments` tables, and
+comment → edit → child photo). The seams are already in place: `RunStore`,
+`PhotoStore`, `EventLog`, `CreditLedger` and `FlagRegistry` all satisfy protocols, so
+the work is a Postgres implementation of each rather than a rewrite.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`
    (never committed — verified absent from history).
 2. Run `backend/scripts/colab_smoke.py` in Colab to confirm the free Qwen
    identity path on a real GPU.
+3. Nothing is committed since Step 18 — Steps 19 and 20 are on disk and green but
+   uncommitted. Commit them before starting the shell integration.

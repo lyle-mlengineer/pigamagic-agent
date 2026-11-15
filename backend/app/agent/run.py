@@ -167,6 +167,15 @@ class RunStore(Protocol):
 
     def link_idempotency(self, key: str, run_id: str) -> None: ...
 
+    def delete(self, run_id: str) -> bool:
+        """Remove one run and its index entries. Returns whether it existed.
+
+        Required for account deletion (SR-5): a purge that cannot remove runs
+        would leave a person's history behind, so the protocol demands it rather
+        than leaving callers to reach into private state.
+        """
+        ...
+
 
 class InMemoryRunStore:
     """Default store. Correct semantics, no durability."""
@@ -208,6 +217,23 @@ class InMemoryRunStore:
             key=lambda run: (run.created_at, run.run_id),
             reverse=True,
         )
+
+    def delete(self, run_id: str) -> bool:
+        """Remove one run, plus the shoot and idempotency indexes pointing at it.
+
+        Both indexes must be cleared together: a stale `_by_key` entry would let
+        a replayed request resurrect a deleted run, which is precisely the
+        resurrection SR-5 forbids.
+        """
+        run = self._runs.pop(run_id, None)
+        if run is None:
+            return False
+        if self._by_shoot.get(run.shoot_id) == run_id:
+            del self._by_shoot[run.shoot_id]
+        for key, mapped in list(self._by_key.items()):
+            if mapped == run_id:
+                del self._by_key[key]
+        return True
 
 
 def new_run_id(brief: ShootBrief, *, attempt: str = "") -> str:

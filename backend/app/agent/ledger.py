@@ -404,6 +404,47 @@ class CreditLedger:
         reservation.settled = True
         return reservation
 
+    # -- deletion ------------------------------------------------------------
+
+    def purge_account(self, account_id: str) -> dict[str, int]:
+        """Remove every ledger row for one account (SR-5).
+
+        Returns counts so a purge report can prove what happened. The balance is
+        *deleted*, not zeroed, because a balance is derived from entries: leaving
+        a zero there would imply an account that still exists with no history,
+        and a later `grant` would silently reactivate it.
+
+        Reservations go first, so a half-open hold cannot survive to refuse a
+        future run for an account that no longer exists.
+        """
+        if not account_id:
+            return {"entries": 0, "reservations": 0}
+
+        reservation_ids = [
+            key
+            for key, reservation in self._reservations.items()
+            if reservation.account_id == account_id
+        ]
+        for key in reservation_ids:
+            reservation = self._reservations.pop(key)
+            if self._reservation_by_run.get(reservation.run_id) == key:
+                del self._reservation_by_run[reservation.run_id]
+
+        doomed = {
+            id(entry) for entry in self._entries if entry.account_id == account_id
+        }
+        removed_entries = len(doomed)
+        if removed_entries:
+            self._entries = [
+                entry for entry in self._entries if id(entry) not in doomed
+            ]
+            # Rebuilt from the surviving list, so an idempotency key can never
+            # point at a deleted row.
+            self._by_key = {key: entry for key, entry in self._by_key.items() if id(entry) not in doomed}
+
+        self._balances.pop(account_id, None)
+        return {"entries": removed_entries, "reservations": len(reservation_ids)}
+
 
 __all__ = [
     "CREDITS_PER_PHOTO",

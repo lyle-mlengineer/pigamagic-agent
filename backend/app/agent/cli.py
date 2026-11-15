@@ -110,6 +110,45 @@ def cmd_briefs(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Run the eval harness over every golden brief. Exit 1 if any brief fails.
+
+    This is the CI entry point: `python -m app.agent.cli eval` is the whole gate,
+    and a non-zero exit is what fails the build.
+    """
+    from app.agent.eval import brief_plan_identity_refs, evaluate
+
+    names = [args.brief] if args.brief else list_briefs()
+    if not names:
+        print("No golden briefs found.", file=sys.stderr)
+        return 1
+
+    failed = 0
+    for name in names:
+        try:
+            artifact = asyncio.run(
+                _build(name, degraded=args.degraded, prompt_budget=args.max_prompt_tokens)
+            )
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        report = evaluate(
+            artifact,
+            references_by_node=brief_plan_identity_refs(artifact.plan),
+        )
+        if not args.quiet:
+            print(report.summary())
+        if not report.passed:
+            failed += 1
+
+    if failed:
+        print(f"\n{failed} of {len(names)} brief(s) FAILED the eval gate.", file=sys.stderr)
+        return 1
+    if not args.quiet:
+        print(f"\nAll {len(names)} brief(s) passed.")
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     try:
         artifact = asyncio.run(
@@ -247,6 +286,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.add_argument("--max-prompt-tokens", type=int, default=None)
     render.set_defaults(func=cmd_render)
+
+    eval_parser = sub.add_parser(
+        "eval", help="run the eval harness over golden briefs (CI gate)"
+    )
+    eval_parser.add_argument("--brief", default=None, help="one brief (default: all)")
+    eval_parser.add_argument("--quiet", action="store_true", help="only report failures")
+    eval_parser.add_argument("--max-prompt-tokens", type=int, default=None)
+    eval_parser.add_argument(
+        "--degraded",
+        action="store_true",
+        help="simulate a planner outage to exercise the fallback path",
+    )
+    eval_parser.set_defaults(func=cmd_eval)
     return parser
 
 

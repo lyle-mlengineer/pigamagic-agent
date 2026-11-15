@@ -132,7 +132,11 @@ class ReferenceAnalysisCache(Protocol):
 
     def get(self, key: str) -> ReferenceAnalysis | None: ...
 
-    def put(self, key: str, analysis: ReferenceAnalysis) -> None: ...
+    def put(self, key: str, analysis: ReferenceAnalysis, *, account_id: str = "") -> None: ...
+
+    def purge_account(self, account_id: str) -> int:
+        """Remove derived analyses belonging to one account (SR-5)."""
+        ...
 
 
 class InMemoryAnalysisCache:
@@ -140,16 +144,45 @@ class InMemoryAnalysisCache:
 
     A Postgres-backed implementation replaces this at Step 11 without changing
     the pipeline, because both satisfy the same protocol.
+
+    Analyses are **derived data** (SR-5): deleting a reference must delete what
+    the vision pass concluded about it. Attribution is tracked per account so
+    `purge_account` can remove exactly those entries, and the underlying key is
+    the content hash rather than the media row — the same bytes supplied twice
+    are analysed once, which is the whole point of the cache.
     """
 
     def __init__(self) -> None:
         self._store: dict[str, ReferenceAnalysis] = {}
+        #: key -> accounts that supplied these bytes.
+        self._owners: dict[str, set[str]] = {}
 
     def get(self, key: str) -> ReferenceAnalysis | None:
         return self._store.get(key)
 
-    def put(self, key: str, analysis: ReferenceAnalysis) -> None:
+    def put(self, key: str, analysis: ReferenceAnalysis, *, account_id: str = "") -> None:
         self._store[key] = analysis
+        if account_id:
+            self._owners.setdefault(key, set()).add(account_id)
+
+    def purge_account(self, account_id: str) -> int:
+        """Drop every analysis this account contributed. Returns how many went.
+
+        A shared key (two accounts supplied byte-identical references) is only
+        dropped once **no** owner remains: deleting it early would force a
+        re-analysis for an account that never asked to be forgotten.
+        """
+        removed = 0
+        for key, owners in list(self._owners.items()):
+            if account_id not in owners:
+                continue
+            owners.discard(account_id)
+            if owners:
+                continue
+            del self._owners[key]
+            if self._store.pop(key, None) is not None:
+                removed += 1
+        return removed
 
     def __len__(self) -> int:
         return len(self._store)
@@ -174,6 +207,7 @@ async def analyze_references(
     vision: VisionProvider,
     cache: ReferenceAnalysisCache | None = None,
     settings: AgentSettings | None = None,
+    account_id: str = "",
 ) -> AnalysisOutcome:
     """Analyse each reference once, then fuse into a shoot cast.
 
@@ -212,7 +246,7 @@ async def analyze_references(
             )
             analysis.scene_quality = "usable"
 
-        store.put(key, analysis)
+        store.put(key, analysis, account_id=account_id)
         analyses.append(analysis)
 
     if not analyses:
