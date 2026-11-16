@@ -27,6 +27,8 @@
 | Package root | `backend/` (run pytest from here) |
 | Reference shell | `D:\git\potfolio\pigamagic\backend` — existing PlusOne product shell the agent integrates with |
 | Secrets | `.env` at repo root, gitignored. Never print or commit secret values. |
+| Media / blobs | **`D:/pigamagic-media/`** — `agent/` and `shell/`. C: has ~2 GB free, so nothing may default to a relative `./var/media` again. |
+| Import root | `pigamagic_agent.*` (was `app.agent.*`; renamed to be vendorable into the shell). CLI: `python -m pigamagic_agent.agent.cli`. |
 | Verify | `cd backend && python -m pytest -q` (exit 0 = healthy) |
 
 > **Note on Python 3.15:** it is newer than most wheel builds. If a dependency fails to install, pin a version with a 3.15 wheel or report it rather than reaching for a different interpreter silently.
@@ -1332,10 +1334,111 @@ cd backend && python -m pytest -q                              # 824 passed
 
 ---
 
+## Media storage moved to the D: drive
+
+**Status: DONE.** Both suites green (agent **829**, shell **29**).
+
+C: has only ~2 GB free while D: has 391 GB, and both repos were writing blob
+files to a *relative* `./var/media`, i.e. onto C:.
+
+| repo | setting | now |
+|---|---|---|
+| agent | `AGENT_MEDIA_DIR` | `D:/pigamagic-media/agent` |
+| shell | `MEDIA_STORAGE_DIR` | `D:/pigamagic-media/shell` |
+
+Existing files were copied to D: (3 agent, 52 shell, 117 MB), verified equal in
+count, and only then were the C: trees deleted. `.env.example` in both repos now
+defaults to the absolute D: path with a comment saying why, so a fresh clone does
+not refill C:.
+
+**Verified by hand, not assumed:**
+- `LocalBlobStore` resolves the absolute path (`D:\pigamagic-media\agent`).
+- A wedding re-render hit the migrated files (0 new writes) — content addressing
+  still dedupes across the move.
+- A *new* memorial render grew D: 3 → 5 and left C: untouched; after deleting the
+  C: trees, a birthday render grew D: 5 → 7 without recreating `var/media`.
+- The shell's product path never uses the agent's default: it passes its own
+  `ShellBlobStore(blob_store)` into `start_run`, and that store reads
+  `settings.media_storage_dir` → D:.
+
+**One trap for later:** pydantic `env_file=".env"` is resolved against the
+**working directory**, so both repos must be started from their `backend/`
+directory. From the repo root the shell silently falls back to `./var/media`,
+i.e. back onto C:. Observed exactly this while checking, so it is recorded rather
+than rediscovered.
+
+**Also synced:** the vendored copy was stale (uncommitted `render.py` work), so
+`./sync_agent.sh` was run and `--check` now exits 0.
+
+---
+
 ## In progress — product shell integration
 
-**Status: PART DONE.** Vendored and generating real photos. Agent suite **826
-passed**; shell suite **19 passed**.
+**Status: PART DONE.** Vendored, generating real photos, and comment -> edit
+works through chained generations. Agent suite **829 passed**; shell suite **29
+passed**.
+
+### Comment -> edit is done (this session)
+
+The shell stored the comment body and did nothing with it. It now compiles the
+comment into an `EditInstruction` and renders a child photo.
+
+```
+root            ph_772fcbce…  credits 49
+edit 'brighter'      201      48
+edit 'move closer'   201      47
+edit 'warmer light'  201      46
+4 distinct photo ids, 4 distinct media ids, one family (base_node_id s00)
+parents chain: [None, root, child, grandchild]
+```
+
+Verified by hand through the real HTTP routes, one credit per edit.
+
+**The bug it found, in two halves:**
+
+1. **`persist_artifact` was never called on the edit path**, so an edit job had
+   no stored prompt and editing a take failed with "produced before edits were
+   supported". Every edit-of-an-edit was impossible. Fixed in
+   `api/photos.py::_apply_comment_edit`.
+2. **`RenderOutcome.artifact` was declared but never assigned**, so even
+   persisting "the outcome's artifact" would have persisted `None`. `render_plan`
+   now returns the artifact it actually rendered — which for an edit is the
+   *scoped* copy, so the edit is not silently discarded by the next one.
+
+**Second real bug: sibling takes were not distinct photographs.**
+`default_seed` keys on `brief.shoot_id` + `node_id`, and an edit inherits both,
+so an edit reusing it produced *the same seed as the parent*. Two different
+instructions on one original would have differed only by prompt text. Added
+`edit_seed()`, keyed on the normalised instruction: different edits of one
+original are different photographs, the same edit twice reproduces the same take
+(so a retry is idempotent and a mistyped retry costs nothing).
+
+**Third: editing an original that already has takes is refused.** Two takes must
+not stack instructions on one prompt. `render_edit` raises `AgentError`, and the
+shell maps it to a 422 with the actionable message rather than a 500.
+
+### Gates proven non-vacuous
+
+| injected regression | fails |
+|---|---|
+| `persist_artifact` removed from the edit path | `test_edit_of_an_edit_chains`, `test_edit_job_stores_the_prompt_it_rendered` |
+| `RenderOutcome.artifact` set to `None` | agent `test_render_outcome_carries_the_artifact_it_rendered` |
+| edit seed reverted to the parent's *or* to `default_seed` | agent `test_two_edits_of_one_original_are_two_photographs` |
+
+### Still open (in priority order)
+
+1. **Providers are fixtures.** One line in `api/photos.py::_run_pipeline_sync`
+   switches to a real image provider; it needs a key and a budget.
+2. **SSE.** The agent's `/runs/{id}/events` works; the shell generates
+   synchronously so the client waits. `GenerationJob` already models the state.
+3. **No lineage endpoints in the shell.** The agent's `lineage.py`
+   (`siblings_of`, `lineage_tree`, `compare`) is tested and ready, and
+   `GeneratedPhoto.parent_photo_id`/`base_node_id` are now populated — but
+   `GET /photos/{id}/lineage` does not exist in the shell, so it 404s. A compare
+   view needs those two routes.
+4. **One flag store.** The agent's `FlagRegistry` is in-memory while the shell has
+   `GeneratedPhoto.safety_flagged`; they must share a store before a flag survives
+   a restart.
 
 ### How the two repos fit together
 
@@ -1399,20 +1502,13 @@ run's history. The shell now maps `safety gate` -> 422 and credits -> 402.
 
 ### Still open (in priority order)
 
-1. **Providers are fixtures.** One line in `api/photos.py::_run_pipeline_sync`
-   switches to a real image provider; it needs a key and a budget.
-2. **SSE.** The agent's `/runs/{id}/events` works; the shell generates
-   synchronously so the client waits. `GenerationJob` already models the state.
-3. **Comment -> edit.** `comments.compile_edit` + `render_edit` are tested and
-   ready; `PhotoComment.edit_job_id` is the join.
-4. **One flag store.** The agent's `FlagRegistry` is in-memory while the shell has
-   `GeneratedPhoto.safety_flagged`; they must share a store before a flag survives
-   a restart.
+See the single authoritative list near the top of this section. Item 3 is now
+complete: comment -> edit works through chained generations.
 
 **Verify command:**
 ```bash
-cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q     # 826
-cd /d/git/potfolio/pigamagic/backend && ../venv/Scripts/python -m pytest -q   # 19
+cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q            # 829
+cd /d/git/potfolio/pigamagic/backend && ../venv/Scripts/python -m pytest -q   # 29
 cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 ```
 
@@ -1423,24 +1519,26 @@ cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q                                  # expect 826 passed
-cd backend && python -m app.agent.cli eval                          # exit 0 = eval gate
-cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q      # expect 19 passed
-cd ../pigamagic/backend && ./sync_agent.sh --check                  # vendored copy in sync
-cd ../pigamagic/backend && git log --oneline -3                     # latest shell work
+cd backend && python -m pytest -q                                  # expect 829 passed
+cd backend && python -m pigamagic_agent.agent.cli eval             # exit 0 = eval gate
+cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q     # expect 29 passed
+cd ../pigamagic/backend && ./sync_agent.sh --check                 # vendored copy in sync
+cd ../pigamagic/backend && git log --oneline -3                    # latest shell work
 ```
 
-State to trust: **Steps 0.1–14 and 17–20 are complete and green (826 tests), and
+State to trust: **Steps 0.1–14 and 17–20 are complete and green (829 tests), and
 the agent is vendored into the product shell at
 `pigamagic/backend/app/pigamagic_agent` generating real photos through the real
-credit ledger (19 shell tests).**
+credit ledger (29 shell tests), with comment -> edit working through three
+chained generations.**
 
 Step order note: 14 → 17 → 18 → 19 → 20 was intentional. Step 15 needs a paid
 search API key and Step 16 needs `pgvector`; neither is available and neither
 blocks the remaining work.
 
 The remaining work is in the **In progress — product shell integration** section
-above, in this order: real providers, SSE, comment→edit, and one shared flag store.
+above, in this order: real providers, SSE, lineage endpoints, and one shared flag
+store.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`

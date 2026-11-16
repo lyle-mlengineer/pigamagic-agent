@@ -104,6 +104,11 @@ class RenderOutcome:
     render_version: str = RENDER_VERSION
     started_at: str = ""
     finished_at: str = ""
+    #: The artifact this run actually rendered from. For an edit that is the
+    #: *scoped* artifact (parent plan plus the edited prompt), not the original —
+    #: storing the original would let a second edit start from the unedited
+    #: prompt and silently discard the first edit.
+    artifact: ShootArtifact | None = None
 
     @property
     def count(self) -> int:
@@ -151,6 +156,21 @@ def default_seed(shot: ShotSpec, brief_shoot_id: str) -> int:
     return int(digest[:8], 16)
 
 
+def edit_seed(shot: ShotSpec, brief_shoot_id: str, instruction: str) -> int:
+    """Deterministic seed for one *take* of a shot.
+
+    A take is a sibling, not a re-render: "make it warmer" and "move closer" are
+    two different photographs, so they must not share the parent's seed. Keying
+    on the instruction keeps them distinct while remaining reproducible — the
+    same instruction twice reproduces the same take.
+    """
+    normalised = " ".join(instruction.split()).casefold()
+    digest = sha256_bytes(
+        f"{brief_shoot_id}:{shot.node_id}:edit:{normalised}".encode("utf-8")
+    )
+    return int(digest[:8], 16)
+
+
 def identity_refs_for(
     shot: ShotSpec, reference_images: Mapping[str, Sequence[bytes]] | None
 ) -> dict[str, list[bytes]] | None:
@@ -182,11 +202,14 @@ async def render_plan(
     parent_id: str | None = None,
     budget: BudgetLedger | None = None,
     node_ids: Sequence[str] | None = None,
+    seed: int | None = None,
 ) -> RenderOutcome:
     """Render every shot in a plan to storage.
 
     `node_ids` restricts the run to specific shots (used for a single-photo
     edit/regenerate). `parent_id` records lineage when re-rendering one photo.
+    `seed` overrides the deterministic per-shot seed. An edit passes its own
+    `edit_seed`, so a take is reproducible without being a re-roll of the parent.
     """
     active = settings or get_settings()
 
@@ -236,6 +259,7 @@ async def render_plan(
                 width=width,
                 height=height,
                 parent_id=parent_id,
+                seed_override=seed,
             )
         except BudgetExceeded as exc:
             # Stop the whole run: continuing would only fail the same way.
@@ -280,6 +304,10 @@ async def render_plan(
         ledger=ledger.as_dict(),
         started_at=started,
         finished_at=finished,
+        # The artifact actually rendered. For an edit that is the scoped copy,
+        # so a host persisting this outcome keeps the edit applied and a second
+        # edit of the child builds on the first instead of discarding it.
+        artifact=artifact,
     )
 
 
@@ -295,10 +323,11 @@ async def _render_one(
     width: int,
     height: int,
     parent_id: str | None,
+    seed_override: int | None = None,
 ) -> tuple[RenderedPhoto, CostEstimate, int]:
     """Generate and persist a single photo, with one retry on a transient error."""
     refs = identity_refs_for(shot, reference_images)
-    seed = default_seed(shot, artifact.brief.shoot_id)
+    seed = seed_override if seed_override is not None else default_seed(shot, artifact.brief.shoot_id)
 
     last_error: Exception | None = None
     for attempt in range(1, MAX_ATTEMPTS_PER_SHOT + 1):
@@ -401,6 +430,14 @@ async def render_edit(
     base_prompt = artifact.prompts.get(original.node_id)
     if base_prompt is None:
         raise AgentError(f"No assembled prompt for node {original.node_id!r}.")
+    # An edit belongs to *one* child. Re-editing the original must not build on a
+    # prompt that already carries someone else's edit, or a discarded take would
+    # silently resurface in the next one.
+    if base_prompt.metadata.get("edited"):
+        raise AgentError(
+            "This prompt already carries an edit; edit the take instead of the "
+            "original so each new photo branches from a delivered image."
+        )
 
     edited = _apply_instruction(base_prompt, instruction)
 
@@ -424,6 +461,11 @@ async def render_edit(
         height=height,
         node_ids=[original.node_id],
         parent_id=original.photo_id,
+        # A take gets its own seed derived from the instruction, so two different
+        # edits of one original are two real photographs instead of the same one
+        # with a different caption. The same instruction twice still reproduces
+        # the same take, so a retried edit stays idempotent.
+        seed=edit_seed(shot, artifact.brief.shoot_id, instruction),
     )
 
 
@@ -467,6 +509,7 @@ __all__ = [
     "RenderOutcome",
     "RenderedPhoto",
     "default_seed",
+    "edit_seed",
     "identity_refs_for",
     "new_shoot_id",
     "render_edit",

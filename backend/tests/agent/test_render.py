@@ -655,6 +655,145 @@ def test_render_edit_creates_a_child_photo(tmp_path) -> None:
     assert asyncio.run(store.get(original.blob.key)) == original_bytes
 
 
+def test_render_outcome_carries_the_artifact_it_rendered(tmp_path) -> None:
+    """A host must be able to persist what actually ran, not recompile it.
+
+    Storing the original artifact after an edit would let a second edit build on
+    the unedited prompt and silently discard the first one.
+    """
+    artifact = _artifact()
+    store = LocalBlobStore(root=tmp_path)
+    provider = FixtureImageProvider(settings=_settings())
+
+    parent_run = asyncio.run(
+        render_plan(artifact, provider=provider, store=store, settings=_settings(), max_shots=1)
+    )
+    assert parent_run.artifact is not None
+
+    edit_run = asyncio.run(
+        render_edit(
+            parent_run.photos[0],
+            artifact,
+            instruction="make the lighting warmer",
+            provider=provider,
+            store=store,
+            settings=_settings(),
+        )
+    )
+    assert edit_run.artifact is not None
+    scoped = edit_run.artifact.prompts[parent_run.photos[0].node_id]
+    assert scoped.metadata.get("edited") is True
+    assert "make the lighting warmer" in scoped.prompt
+    # The untouched nodes keep their original prompts.
+    others = {
+        node: prompt.prompt
+        for node, prompt in edit_run.artifact.prompts.items()
+        if node != parent_run.photos[0].node_id
+    }
+    for node, prompt in others.items():
+        assert prompt == artifact.prompts[node].prompt
+
+
+def test_two_edits_of_one_original_are_two_photographs(tmp_path) -> None:
+    """Takes are siblings, not re-renders: they must not share the parent's seed.
+
+    `default_seed` keys on shoot id + node id, both of which an edit inherits, so
+    an edit that simply reused it would produce the *same* pixels as the original
+    and every take of a shot would be one image with different captions.
+    """
+    from pigamagic_agent.agent.render import edit_seed
+
+    artifact = _artifact()
+    store = LocalBlobStore(root=tmp_path)
+    provider = FixtureImageProvider(settings=_settings())
+
+    parent_run = asyncio.run(
+        render_plan(artifact, provider=provider, store=store, settings=_settings(), max_shots=1)
+    )
+    original = parent_run.photos[0]
+    shot = next(s for s in artifact.plan.shots if s.node_id == original.node_id)
+
+    warmer = asyncio.run(
+        render_edit(
+            original,
+            artifact,
+            instruction="make it warmer",
+            provider=provider,
+            store=store,
+            settings=_settings(),
+        )
+    ).photos[0]
+    closer = asyncio.run(
+        render_edit(
+            original,
+            artifact,
+            instruction="move closer",
+            provider=provider,
+            store=store,
+            settings=_settings(),
+        )
+    ).photos[0]
+
+    # Different instructions -> different takes of the same node.
+    assert warmer.seed != closer.seed
+    assert warmer.blob.key != closer.blob.key
+    # And neither is a duplicate of the delivered original.
+    assert warmer.seed != original.seed
+    assert warmer.blob.key != original.blob.key
+    assert closer.blob.key != original.blob.key
+
+    # Still deterministic: the same instruction twice reproduces the same take.
+    repeat = asyncio.run(
+        render_edit(
+            original,
+            artifact,
+            instruction="make it warmer",
+            provider=provider,
+            store=store,
+            settings=_settings(),
+        )
+    ).photos[0]
+    assert repeat.seed == warmer.seed
+    assert repeat.blob.key == warmer.blob.key
+    # Whitespace/case never forks the seed, or a mistyped retry costs a photo.
+    assert edit_seed(shot, artifact.brief.shoot_id, "  Make  it WARMER ") == warmer.seed
+
+
+def test_editing_an_already_edited_prompt_is_refused(tmp_path) -> None:
+    """Two takes of one original must not stack edit instructions."""
+    from pigamagic_agent.agent.providers.base import AgentError
+
+    artifact = _artifact()
+    store = LocalBlobStore(root=tmp_path)
+    provider = FixtureImageProvider(settings=_settings())
+
+    parent_run = asyncio.run(
+        render_plan(artifact, provider=provider, store=store, settings=_settings(), max_shots=1)
+    )
+    original = parent_run.photos[0]
+    edit_run = asyncio.run(
+        render_edit(
+            original,
+            artifact,
+            instruction="brighter",
+            provider=provider,
+            store=store,
+            settings=_settings(),
+        )
+    )
+    with pytest.raises(AgentError, match="already carries an edit"):
+        asyncio.run(
+            render_edit(
+                original,
+                edit_run.artifact,
+                instruction="move closer",
+                provider=provider,
+                store=store,
+                settings=_settings(),
+            )
+        )
+
+
 def test_edit_instruction_reaches_the_prompt() -> None:
     from pigamagic_agent.agent.prompts import AssembledPrompt
     from pigamagic_agent.agent.render import _apply_instruction
