@@ -1545,5 +1545,10 @@ Outstanding items for you:
    (never committed — verified absent from history).
 2. Run `backend/scripts/colab_smoke.py` in Colab to confirm the free Qwen
    identity path on a real GPU.
-3. Neither repo has been committed since the shell integration began. Commit the
-   agent repo first, then the shell (which vendors it), so the pair stays paired.
+3. ~~Neither repo has been committed since the shell integration began.~~
+   **DONE.** Agent `4324894` then shell `102b854`, in that order so the pair stays
+   paired. Parity was checked properly, not assumed: the vendored copy differs
+   from the committed agent by exactly the `app.pigamagic_agent.` prefix (proven
+   by normalising the prefix and CRLF out of every `.py` → identical) and the
+   JSON data files are identical modulo line endings. Both trees are clean and
+   `sync_agent.sh --check` exits 0.
