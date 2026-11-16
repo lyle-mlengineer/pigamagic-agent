@@ -65,6 +65,7 @@
 | 19 eval harness | **DONE** | 33 tests; 799 total pass |
 | 20 safety console + purge paths | **DONE** | 25 tests; 824 total pass |
 | 11+ product shell / API | **PART DONE** | vendored + real generation wired; SSE/comment-edit still open |
+| provider switch | **DONE** | config-only (`AGENT_IMAGE_PROVIDER`); 3 sanity tests; 32 shell tests |
 
 ---
 
@@ -1334,6 +1335,49 @@ cd backend && python -m pytest -q                              # 824 passed
 
 ---
 
+## Provider switch exists — and the sanity test caught a silent-failure bug
+
+**Status: DONE.** Shell suite **32 passed** (29 + 3 new). Agent **829**. Offline.
+
+### The switch was already wired, and the note was stale
+
+`api/photos.py::_run_pipeline_sync` (generate) and the edit path both call
+`build_image_provider(settings)`, which reads `AGENT_IMAGE_PROVIDER`. No code
+change is needed to go real — it is env config. The dead `FixtureImageProvider`
+import beside the real wiring was removed.
+
+New `tests/test_provider_sanity.py` pins the contract:
+
+| test | what it proves |
+|---|---|
+| `test_provider_env_changes_selection` | `AGENT_IMAGE_PROVIDER=nvidia` selects `NvidiaImageProvider`, not fixture |
+| `test_missing_key_refuses_at_generate` | a keyless real provider raises typed `ProviderNotConfigured`, never a fake image |
+| `test_route_fails_loudly_on_misconfigured_provider` | the HTTP route errors (502), renders nothing, charges nothing |
+
+### The real bug it caught
+
+The route guarded failures with `_run_outcome(run_result) is None`. But an
+*empty* render is wrapped in a non-None `PersistResult`, so a provider failure
+(a keyless nvidia, say) answered **`200 []`** — a clean-looking empty success,
+with `job.status=failed` only in the database. A user who configured a real
+provider and got fake-looking nothing would believe the product worked.
+
+Fixed two ways in `api/photos.py`:
+
+1. The guard is now "no photos survived", not "no result object":
+   `if failure is not None and (photos is None or photos.count == 0)`.
+2. `_terminal_failure` now names the first shot's actual cause, so the 502 says
+   `"no photos were produced: unexpected provider failure: nvidia requires an
+   API key. Set the provider's key in the environment, or use the fixture
+   provider."` — verified by a live HTTP probe (was `200 []`, now `502` with
+   that body). A brick-wall "no photos were produced" would have been only
+   half a fix.
+
+Nothing was charged on the failure path: the reservation is cancelled inside
+`start_run`, and the test asserts `GET /auth/me` still shows 50 credits.
+
+---
+
 ## Media storage moved to the D: drive
 
 **Status: DONE.** Both suites green (agent **829**, shell **29**).
@@ -1427,8 +1471,20 @@ shell maps it to a 422 with the actionable message rather than a 500.
 
 ### Still open (in priority order)
 
-1. **Providers are fixtures.** One line in `api/photos.py::_run_pipeline_sync`
-   switches to a real image provider; it needs a key and a budget.
+1. **Providers are fixtures by *default*, but the switch already exists.**
+   `api/photos.py` calls `build_image_provider(settings)` on both the generate
+   and edit paths, so going real is **configuration, not code**:
+   `AGENT_IMAGE_PROVIDER` + `AGENT_IMAGE_API_KEY` (+ a budget) in the shell's
+   `backend/.env`. The dead `FixtureImageProvider` import was removed.
+
+   **Before trusting a real provider, remember `image_budget_usd` defaults to
+   `0.0`, and `BudgetLedger.check()` returns early when `limit_usd <= 0` — so
+   `0.0` means *unlimited*, not *blocked*. Set a real number first.**
+
+   Best first target is `qwen`/`huggingface` on a free Colab GPU, not the NVIDIA
+   key: the hosted NIM accepts only preset example images and declares
+   `supports_identity_refs=False`, so it cannot hold a real face.
+
 2. **SSE.** The agent's `/runs/{id}/events` works; the shell generates
    synchronously so the client waits. `GenerationJob` already models the state.
 3. **No lineage endpoints in the shell.** The agent's `lineage.py`
