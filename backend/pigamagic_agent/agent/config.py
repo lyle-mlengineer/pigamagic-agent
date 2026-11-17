@@ -36,6 +36,9 @@ ProviderName = Literal[
     "flux-local",
     "sd",
     "colab",
+    "brave",
+    "searxng",
+    "wikipedia",
     "custom",
 ]
 
@@ -82,6 +85,11 @@ class AgentSettings(BaseSettings):
     vision_api_key: str = ""
     image_api_key: str = ""
     web_api_key: str = ""
+
+    # Base URL for web providers that are hosted by the operator rather than a
+    # vendor: a SearXNG instance, or an alternative MediaWiki API. Blank means
+    # "use the adapter's own default" (which SearXNG does not have).
+    web_base_url: str = ""
 
     # --- NVIDIA NIM / Black Forest Labs ------------------------------------
     # The sample implementation reads these two names, so they are kept as-is.
@@ -188,16 +196,25 @@ class AgentSettings(BaseSettings):
         )
 
     def missing_credentials(self) -> list[str]:
-        """Names of providers selected but lacking a key. Empty under fixtures."""
+        """Names of providers selected but lacking a key. Empty under fixtures.
+
+        Not every provider needs a key: SearXNG needs an instance URL and the
+        Wikipedia API needs nothing at all. Treating "non-fixture" as "needs a
+        key" would report a missing credential for a perfectly valid setup.
+        """
         missing: list[str] = []
         for provider_name, key in (
             (self.llm_provider, self.llm_api_key),
             (self.vision_provider, self.vision_api_key),
             (self.image_provider, self.image_api_key),
-            (self.web_provider, self.web_api_key),
         ):
             if provider_name != "fixture" and not key.strip():
                 missing.append(f"{provider_name} (key missing)")
+
+        if self.web_provider == "brave" and not self.web_api_key.strip():
+            missing.append("brave (key missing)")
+        elif self.web_provider == "searxng" and not self.web_base_url.strip():
+            missing.append("searxng (base url missing)")
         return missing
 
     def hash_relevant_settings(self) -> dict[str, object]:

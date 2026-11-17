@@ -101,6 +101,12 @@ _ARCHITECTURE_TERMS: tuple[str, ...] = (
     "brick",
     "thatched",
     "floor-to-ceiling windows",
+    "ballroom",
+    "chandelier",
+    "rooftop",
+    "pool",
+    "spa",
+    "lounge",
 )
 
 _LIGHTING_TERMS: tuple[str, ...] = (
@@ -134,6 +140,58 @@ _COLOUR_TERMS: tuple[str, ...] = (
 )
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+# Words that make a sentence a usable visual anchor. Matched on word boundaries:
+# substring matching turned "Archived from…" into a `signature_detail` because
+# "archived" contains "arch", which is exactly the kind of fake evidence this
+# module exists to prevent.
+_DETAIL_TERMS: tuple[str, ...] = (
+    "pool",
+    "colonnade",
+    "atrium",
+    "arch",
+    "arches",
+    "garden",
+    "terrace",
+    "window",
+    "windows",
+    "floor",
+    "floors",
+    "ballroom",
+    "ceiling",
+    "marble",
+    "staircase",
+    "stairs",
+    "fountain",
+    "lawn",
+    "courtyard",
+    "chandelier",
+    "stage",
+    "dance floor",
+    "rooftop",
+)
+_DETAIL_PATTERN = re.compile(r"\b(?:" + "|".join(_DETAIL_TERMS) + r")\b")
+
+# Citation furniture that survives naive text extraction. A bibliography is not
+# a description of a room, so a sentence containing these is never an anchor.
+_BOILERPLATE_MARKERS: tuple[str, ...] = (
+    "archived from",
+    "retrieved",
+    "isbn",
+    "doi:",
+    "http://",
+    "https://",
+    "↑",
+    "[edit]",
+    "edit]",
+    "citation needed",
+    "external links",
+)
+
+# Tokens that say nothing about which venue a page is about.
+_VENUE_STOPWORDS: frozenset[str] = frozenset(
+    {"the", "and", "for", "with", "hotel", "venue", "hall", "centre", "center"}
+)
 
 
 # --------------------------------------------------------------------------
@@ -254,20 +312,21 @@ def extract_details(pages: Sequence[str]) -> list[str]:
     """Pull short, quotable venue details out of page text.
 
     These become `signature_details`, which the planner uses as concrete
-    anchors ("the long reflecting pool") rather than vague adjectives.
+    anchors ("the long reflecting pool") rather than vague adjectives. A
+    sentence only qualifies when it names a *visual* feature and is not
+    citation furniture.
     """
     details: list[str] = []
     seen: set[str] = set()
     for page in pages:
         for sentence in _SENTENCE_SPLIT.split(page):
-            candidate = sentence.strip()
-            if len(candidate) < 20 or len(candidate) > 160:
+            candidate = " ".join(sentence.split())
+            if not 25 <= len(candidate) <= 220:
                 continue
             lowered = candidate.casefold()
-            if not any(
-                term in lowered
-                for term in ("pool", "colonnade", "atrium", "arch", "garden", "terrace", "windows", "floor", "light")
-            ):
+            if not _DETAIL_PATTERN.search(lowered):
+                continue
+            if any(marker in lowered for marker in _BOILERPLATE_MARKERS):
                 continue
             key = lowered[:60]
             if key in seen:
@@ -277,6 +336,36 @@ def extract_details(pages: Sequence[str]) -> list[str]:
             if len(details) >= 6:
                 return details
     return details
+
+
+def rank_hits(venue: str, hits: Sequence[SearchHit]) -> list[SearchHit]:
+    """Order search hits by how much their title/URL looks like this venue.
+
+    Search engines happily return a beer brand for a hotel query. Those pages
+    are not evidence, and letting them in contaminates the palette and detail
+    lists with another subject's vocabulary. When at least two hits share a
+    token with the venue we keep only those; otherwise the original order is
+    preserved, because an unrelated-looking title is not proof of irrelevance.
+
+    Stable for equal scores, so a profile stays reproducible.
+    """
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{3,}", venue.casefold())
+        if token not in _VENUE_STOPWORDS
+    }
+    if not tokens:
+        return list(hits)
+
+    scored: list[tuple[int, int, SearchHit]] = []
+    for index, hit in enumerate(hits):
+        haystack = f"{hit.title} {hit.url}".casefold()
+        score = sum(1 for token in tokens if token in haystack)
+        scored.append((-score, index, hit))
+    scored.sort(key=lambda row: (row[0], row[1]))
+
+    relevant = [hit for negative, _, hit in scored if -negative > 0]
+    return relevant if len(relevant) >= 2 else [hit for _, _, hit in scored]
 
 
 def rank_images(urls: Sequence[str], limit: int) -> list[str]:
@@ -372,6 +461,9 @@ async def research_venue(
         )
 
     # Extract the best pages. Cap so a link-heavy site cannot blow the budget.
+    # Unrelated hits (a beer brand for a hotel query) are dropped first, so they
+    # cannot donate their vocabulary to this venue's profile.
+    hits = rank_hits(venue, hits)
     page_fetches = 0
     pages_text: list[str] = []
     image_urls: list[str] = []
@@ -383,17 +475,16 @@ async def research_venue(
             sources.append(page.url)
         if page.text:
             pages_text.append(page.text)
-        # Fixture pages expose images through the page URL convention; providers
-        # that return inline images are handled by fetch_image below.
+        # Real adapters return absolute image URLs harvested from the page
+        # markup. `_images_in_text` stays as a fallback for providers whose text
+        # mentions image URLs directly.
+        image_urls.extend(getattr(page, "images", ()) or ())
         image_urls.extend(_images_in_text(page.text))
 
     # Fetch a bounded number of images for the vision pass.
     images: list[WebImage] = []
     image_fetches = 0
-    candidates = rank_images(
-        [f"{source}/photo-{index}.png" for source in sources for index in range(3)] + image_urls,
-        active.max_images_per_venue,
-    )
+    candidates = rank_images(image_urls, active.max_images_per_venue)
     for url in candidates[: active.max_images_per_venue]:
         image = await web.fetch_image(url=url)
         image_fetches += 1
@@ -579,6 +670,7 @@ __all__ = [
     "extract_details",
     "extract_terms",
     "plan_queries",
+    "rank_hits",
     "rank_images",
     "research_venue",
 ]

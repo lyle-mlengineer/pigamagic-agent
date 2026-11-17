@@ -163,12 +163,19 @@ class VisionResult:
 
 @dataclass(frozen=True, slots=True)
 class WebPage:
-    """One extracted web page used as venue evidence."""
+    """One extracted web page used as venue evidence.
+
+    `images` carries absolute URLs found in the page's markup. It is part of the
+    contract because the research stage must fetch *real* image candidates: for
+    a long time this field did not exist and the pipeline synthesised
+    `{page_url}/photo-N.png` instead, which 404s against every real website.
+    """
 
     url: str
     title: str
     text: str
     fetched_at: str = ""
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

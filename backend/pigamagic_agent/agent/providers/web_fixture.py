@@ -134,6 +134,7 @@ class FixtureWebProvider:
                     title=page.title,
                     text=page.text,
                     fetched_at="2024-01-01T00:00:00Z",
+                    images=page.images,
                 )
         # Unknown URLs are a real condition (links rot); do not raise.
         return WebPage(url=url, title="", text="", fetched_at="2024-01-01T00:00:00Z")

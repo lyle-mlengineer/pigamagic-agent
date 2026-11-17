@@ -174,8 +174,104 @@ def describe_image_providers() -> list[dict[str, Any]]:
     return rows
 
 
+def available_web_providers() -> tuple[str, ...]:
+    """Search adapters a host can select with AGENT_WEB_PROVIDER."""
+    return ("fixture", "wikipedia", "searxng", "brave")
+
+
+def build_web_provider(
+    settings: AgentSettings | None = None,
+    *,
+    name: str | None = None,
+    budget: BudgetLedger | None = None,
+) -> WebProvider:
+    """Construct the configured web-research provider.
+
+    `fixture` stays the default so tests, the CLI and CI never touch the network
+    by accident. The real adapters differ only in how they search; page
+    extraction and image download are shared (providers/web_common.py).
+    """
+    active = settings or get_settings()
+    chosen = (name or active.web_provider or "fixture").strip().casefold()
+
+    if chosen in {"fixture", "fake", "offline"}:
+        from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+
+        return FixtureWebProvider()
+
+    if chosen in {"wikipedia", "wiki", "mediawiki"}:
+        from pigamagic_agent.agent.providers.web_wikipedia import (
+            WIKIPEDIA_API,
+            WikipediaWebProvider,
+        )
+
+        return WikipediaWebProvider(
+            api_key=active.web_api_key,
+            base_url=active.web_base_url.strip() or WIKIPEDIA_API,
+            settings=active,
+            budget=budget,
+        )
+
+    if chosen in {"searxng", "searx"}:
+        from pigamagic_agent.agent.providers.web_searxng import SearxngWebProvider
+
+        return SearxngWebProvider(
+            api_key=active.web_api_key,
+            base_url=active.web_base_url.strip(),
+            settings=active,
+            budget=budget,
+        )
+
+    if chosen in {"brave", "brave-search"}:
+        from pigamagic_agent.agent.providers.web_brave import BraveWebProvider
+
+        return BraveWebProvider(
+            api_key=active.web_api_key,
+            settings=active,
+            budget=budget,
+        )
+
+    raise ProviderNotConfigured(
+        f"Unknown web provider {chosen!r}. Choose one of: "
+        f"{', '.join(available_web_providers())}."
+    )
+
+
+def describe_web_providers() -> list[dict[str, Any]]:
+    """Capability summary, so a host can pick a research backend knowingly."""
+    return [
+        {
+            "name": "fixture",
+            "needs_key": False,
+            "needs_base_url": False,
+            "note": "offline canned corpus, deterministic, free",
+        },
+        {
+            "name": "wikipedia",
+            "needs_key": False,
+            "needs_base_url": False,
+            "note": "keyless public API; best for notable venues (heritage hotels, churches, gardens)",
+        },
+        {
+            "name": "searxng",
+            "needs_key": False,
+            "needs_base_url": True,
+            "note": "keyless open web via your own SearXNG instance (JSON format enabled)",
+        },
+        {
+            "name": "brave",
+            "needs_key": True,
+            "needs_base_url": False,
+            "note": "open web, clean JSON, free monthly quota then ~$5/1000 queries",
+        },
+    ]
+
+
 __all__ = [
     "available_image_providers",
+    "available_web_providers",
     "build_image_provider",
+    "build_web_provider",
     "describe_image_providers",
+    "describe_web_providers",
 ]

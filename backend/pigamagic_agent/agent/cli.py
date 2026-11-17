@@ -238,6 +238,98 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 0 if outcome.complete else 1
 
 
+def cmd_research(args: argparse.Namespace) -> int:
+    """Research one venue with a real web provider — the Step 15 surface.
+
+    Exit codes: 0 researched, 1 looked and found nothing (honest low
+    confidence), 2 provider failure, 3 provider not configured.
+    """
+    from pigamagic_agent.agent.providers.base import AgentError, ProviderNotConfigured  # noqa: PLC0415
+    from pigamagic_agent.agent.providers.registry import build_web_provider  # noqa: PLC0415
+    from pigamagic_agent.agent.research import CONFIDENCE_NONE, research_venue  # noqa: PLC0415
+
+    settings = get_settings()
+    try:
+        web = build_web_provider(settings, name=args.provider)
+    except ProviderNotConfigured as exc:
+        print(f"Web provider setup failed: {exc}", file=sys.stderr)
+        return 3
+
+    try:
+        outcome = asyncio.run(
+            research_venue(
+                args.venue,
+                args.event,
+                web=web,
+                pack=get_pack(args.event),
+                settings=settings,
+            )
+        )
+    except ProviderNotConfigured as exc:
+        # SearXNG only discovers its missing instance URL when it searches, so
+        # the setup check has to run here too. Reporting it as a "provider
+        # failure" would send the operator looking for an outage instead of a
+        # setting.
+        print(f"Web provider setup failed: {exc}", file=sys.stderr)
+        return 3
+    except AgentError as exc:
+        print(f"Research failed: {exc}", file=sys.stderr)
+        return 2
+
+    profile = outcome.profile
+    if not args.quiet:
+        _print_research(outcome, provider=getattr(web, "name", "?"))
+
+    if args.out:
+        payload = {
+            "profile": profile.model_dump(),
+            "sources": outcome.sources,
+            "warnings": outcome.warnings,
+            "search_calls": outcome.search_calls,
+            "page_fetches": outcome.page_fetches,
+            "image_fetches": outcome.image_fetches,
+            "provider": getattr(web, "name", "?"),
+        }
+        target = Path(args.out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"Profile written to {target}")
+
+    return 0 if profile.confidence > CONFIDENCE_NONE else 1
+
+
+def _print_research(outcome, *, provider: str) -> None:
+    profile = outcome.profile
+    print(f"venue       : {profile.name}")
+    print(f"venue key   : {profile.venue_key}")
+    print(f"kind        : {profile.kind} ({profile.indoor_outdoor})")
+    print(f"confidence  : {profile.confidence:.2f}")
+    for label, values in (
+        ("architecture", profile.architecture),
+        ("materials", profile.materials),
+        ("palette", profile.palette),
+        ("lighting", profile.lighting),
+        ("time of day", profile.time_of_day_evidence),
+    ):
+        if values:
+            print(f"{label:<12}: {', '.join(values)}")
+    if profile.layout:
+        print(f"layout      : {profile.layout}")
+    if profile.signature_details:
+        print("signature details:")
+        for detail in profile.signature_details:
+            print(f"  - {detail}")
+    print(f"sources     : {len(profile.sources)}")
+    for source in profile.sources[:10]:
+        print(f"  - {source}")
+    print(
+        f"web calls   : provider={provider} searches={outcome.search_calls} "
+        f"pages={outcome.page_fetches} images={outcome.image_fetches}"
+    )
+    for warning in outcome.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m pigamagic_agent.agent.cli",
@@ -299,6 +391,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="simulate a planner outage to exercise the fallback path",
     )
     eval_parser.set_defaults(func=cmd_eval)
+
+    research = sub.add_parser(
+        "research", help="research one venue with a real or fixture web provider"
+    )
+    research.add_argument("--venue", required=True, help="venue name, e.g. 'Stanley Hotel, Nairobi'")
+    research.add_argument("--event", default="wedding", help="event type used for conventions")
+    research.add_argument(
+        "--provider",
+        default=None,
+        help="fixture | wikipedia | searxng | brave (default: AGENT_WEB_PROVIDER)",
+    )
+    research.add_argument("--out", help="write the profile JSON to this path")
+    research.add_argument("--quiet", action="store_true", help="suppress the summary")
+    research.set_defaults(func=cmd_research)
     return parser
 
 

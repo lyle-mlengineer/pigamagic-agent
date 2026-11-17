@@ -32,9 +32,11 @@ def build_app(account_id: str = DEFAULT_ACCOUNT, credits: int = DEFAULT_CREDITS)
     from pigamagic_agent.agent.config import get_settings
     from pigamagic_agent.agent.ledger import CreditLedger
     from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
-    from pigamagic_agent.agent.providers.registry import build_image_provider
+    from pigamagic_agent.agent.providers.registry import (
+        build_image_provider,
+        build_web_provider,
+    )
     from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
-    from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
     from pigamagic_agent.agent.storage import build_blob_store
     from pigamagic_agent.api import build_dependencies, create_app
     from pigamagic_agent.api.runs import ProviderBundle
@@ -43,7 +45,7 @@ def build_app(account_id: str = DEFAULT_ACCOUNT, credits: int = DEFAULT_CREDITS)
     providers = ProviderBundle(
         llm=FixtureLLMProvider(),
         vision=FixtureVisionProvider(),
-        web=FixtureWebProvider(),
+        web=build_web_provider(settings),
         image=build_image_provider(settings),
         blobs=build_blob_store(settings),
     )

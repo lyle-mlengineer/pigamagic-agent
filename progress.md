@@ -59,7 +59,7 @@
 | 13 runs API + SSE | **DONE** | 24 tests; 677 total pass |
 | 14 feed integration | **DONE** | 23 tests; 700 total pass |
 | 17 comment modes + edit compilation | **DONE** | 38 tests; 738 total pass |
-| 15 real web research | **BLOCKED** | needs a paid search API key |
+| 15 real web research | **DONE** | keyless Wikipedia/SearXNG + Brave; 77 tests; 906 total pass |
 | 16 RAG corpus | **BLOCKED** | needs `pgvector` (not installed) |
 | 18 lineage + per-edit credits | **DONE** | 28 tests; 766 total pass |
 | 19 eval harness | **DONE** | 33 tests; 799 total pass |
@@ -1335,6 +1335,136 @@ cd backend && python -m pytest -q                              # 824 passed
 
 ---
 
+## Completed step — 15 Real web research (keyless first, brave optional)
+
+**Status: DONE.** Full suite **906 passed** (77 new in `test_web_providers.py`).
+Offline in CI, real on demand.
+
+### What shifted from the plan
+
+steps.md assumed a paid search API key was the only way to do this. Three of the
+four adapters need **no key at all**, so the step was unblocked without one:
+
+| provider | needs | note |
+|---|---|---|
+| `fixture` | nothing | default; CI never touches the network |
+| `wikipedia` | nothing | keyless MediaWiki API; the real path that was actually verified |
+| `searxng` | an instance URL | keyless open web, self-hostable |
+| `brave` | `AGENT_WEB_API_KEY` | clean JSON, free monthly quota then ~$5/1000 queries |
+
+`AGENT_WEB_PROVIDER` selects one; `AGENT_WEB_BASE_URL` carries the SearXNG
+instance or an alternative MediaWiki. Selection is **configuration, not code**.
+
+### What was built
+
+| file | purpose |
+|---|---|
+| `providers/web_common.py` | `HttpWebProvider` base + the one HTML extractor |
+| `providers/web_wikipedia.py` | keyless article search/read via the MediaWiki API |
+| `providers/web_searxng.py` | keyless JSON search through an operator's instance |
+| `providers/web_brave.py` | keyed open-web search, reports its per-query price |
+| `providers/registry.py` | `build_web_provider`, `available_web_providers`, `describe_web_providers` |
+| `providers/base.py` | `WebPage.images` — absolute image URLs found in the markup |
+| `research.py` | `rank_hits`, detail extraction hardened, real image candidates |
+| `cli.py` | `research` subcommand: 0 researched, 1 nothing found, 2 failure, 3 misconfigured |
+| `config.py` | `web_base_url`; `missing_credentials` knows who actually needs a key |
+| `tests/agent/test_web_providers.py` | 77 tests, all offline (mock transport) |
+
+**Only `search()` is vendor-specific.** Page extraction, image download, the
+offline guard, dead-page policy and the size caps live once in `web_common.py`,
+so three adapters cannot drift into three different notions of evidence.
+
+### Verified against the real internet, by eye
+
+```
+$ python -m pigamagic_agent.agent.cli research --venue "Stanley Hotel, Nairobi" --provider wikipedia
+confidence  : 0.70
+architecture: ballroom, rooftop, pool
+signature details:
+  - The hotel has three restaurants: the Thorn Tree Café, named for the original acacia tree …
+  - There are nine meeting and conference rooms …, including a 227-square-metre ballroom …
+  - The Sarova Stanley has a heated rooftop swimming pool, as well as a health club …
+sources     : 2   web calls: searches=5 pages=2 images=2
+```
+
+Every detail is a correct fact about the real Sarova Stanley (the Thorn Tree
+Café and the 227 m² ballroom are its documented features), and the venue has no
+connection to the fixture corpus — so this is genuine research, not canned text.
+The pathological case holds too: a fifty-word venue name still costs exactly
+`max_search_calls` searches, and an unrelated venue
+(`"Zzzq Wibbleton Nonexistent Pavilion of Qqq"`) returns confidence 0.15 with
+`no-sources` and zero invented detail.
+
+### Design decisions worth keeping
+
+- **A dead page is data, not an error.** 403/404/410/451 → an empty `WebPage`;
+  a 429/5xx → `ProviderError`, because those say something about our budget or
+  credentials. Returning empty keeps link rot from failing a whole research run.
+- **An unusable image is skipped, never fatal.** Oversized, non-image bytes,
+  blocked hotlink — all yield an empty `WebImage`. Sniffed bytes beat the
+  `content-type` header, because CDNs serve real JPEGs as
+  `application/octet-stream`.
+- **Wikipedia prose comes from `prop=extracts&explaintext`, not the rendered
+  page.** Extracting a rendered article gives the planner navigation labels and
+  bibliography as "architecture". The API also returns the lead photo in the
+  same call.
+- **`srnamespace=0`.** A `File:` or `Category:` hit is not evidence.
+- **Web research can never spend the image budget.** `HttpWebProvider` replaces
+  the inherited `AGENT_IMAGE_BUDGET_USD` ledger with an unbounded one unless the
+  host supplies its own, since a research run that consumed it would make the
+  next photo render unaffordable.
+- **`rank_hits` drops results about something else** — a hotel query happily
+  returns a beer brand, and its vocabulary would contaminate the palette. It
+  keeps everything when fewer than two hits look relevant, because an
+  unrelated-looking title is not proof of irrelevance.
+
+### Bugs found and fixed
+
+1. **`<title>` was never captured.** `head` is a skipped element and the skip
+   check ran *before* the title check, so every real page reported
+   `title == ""`. The page title is the strongest signal of what a document is
+   about, and it was silently empty for all four adapters.
+2. **An `<img>` with no `src` became an image candidate for the page itself.**
+   `urljoin(base, "")` returns the base URL, which passes `require_http_url`, so
+   every lazy-loading page donated its own HTML URL as "venue photography" and
+   the fetch downloaded a page where an image was expected.
+3. **Images inside skipped containers were collected.** `noscript` bodies are
+   print/tracking fallbacks; they were being ranked as venue photos.
+4. **The CLI reported a missing SearXNG instance as a provider failure (exit 2)
+   instead of a setup failure (exit 3)**, sending the operator to look for an
+   outage when a setting was absent. `ProviderNotConfigured` is now caught around
+   the research call too, since that is where SearXNG first notices.
+5. **The CLI exited 0 for a venue that yielded nothing usable.** It keyed on
+   `has_research()`, which is "has real sources" — but a profile can cite two
+   real pages that contain no visual detail (confidence 0.15, no signature
+   details). The exit code now keys on `confidence > CONFIDENCE_NONE`, so "we
+   looked and learned nothing" is honest at the shell level too.
+
+Also fixed while here: `research.py` no longer synthesises
+`{page}/photo-N.png` image candidates (they 404 against every real website) —
+`WebPage.images` replaced them, and the fixture corpus already carried real
+image URLs, so the offline path lost nothing.
+
+### Gates proven non-vacuous
+
+The three extraction bugs above were each found by a failing test, and each fix
+is pinned: `test_extract_page_reads_title_and_visible_text`,
+`test_extract_page_never_reports_the_page_itself_as_an_image`,
+`test_extract_page_drops_images_inside_skipped_containers`. The CLI exit-code
+contract is pinned by `test_cli_research_reports_misconfiguration_as_setup_failure`
+and `test_cli_research_exits_one_when_nothing_was_found`, which run the real
+subprocess.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_web_providers.py   # 77 passed
+cd backend && python -m pytest -q                                     # 906 passed
+cd backend && python -m pigamagic_agent.agent.cli research \
+    --venue "Stanley Hotel, Nairobi" --provider wikipedia             # exit 0, real details
+```
+
+---
+
 ## Provider switch exists — and the sanity test caught a silent-failure bug
 
 **Status: DONE.** Shell suite **32 passed** (29 + 3 new). Agent **829**. Offline.
@@ -1563,8 +1693,8 @@ complete: comment -> edit works through chained generations.
 
 **Verify command:**
 ```bash
-cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q            # 829
-cd /d/git/potfolio/pigamagic/backend && ../venv/Scripts/python -m pytest -q   # 29
+cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q            # 906
+cd /d/git/potfolio/pigamagic/backend && ../venv/Scripts/python -m pytest -q   # 32
 cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 ```
 
@@ -1575,26 +1705,32 @@ cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q                                  # expect 829 passed
+cd backend && python -m pytest -q                                  # expect 906 passed
 cd backend && python -m pigamagic_agent.agent.cli eval             # exit 0 = eval gate
-cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q     # expect 29 passed
+cd backend && python -m pigamagic_agent.agent.cli research \
+    --venue "Stanley Hotel, Nairobi" --provider wikipedia --quiet   # exit 0 = real research works
+cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q     # expect 32 passed
 cd ../pigamagic/backend && ./sync_agent.sh --check                 # vendored copy in sync
 cd ../pigamagic/backend && git log --oneline -3                    # latest shell work
 ```
 
-State to trust: **Steps 0.1–14 and 17–20 are complete and green (829 tests), and
+State to trust: **Steps 0.1–15 and 17–20 are complete and green (906 tests), and
 the agent is vendored into the product shell at
 `pigamagic/backend/app/pigamagic_agent` generating real photos through the real
-credit ledger (29 shell tests), with comment -> edit working through three
+credit ledger (32 shell tests), with comment -> edit working through three
 chained generations.**
 
-Step order note: 14 → 17 → 18 → 19 → 20 was intentional. Step 15 needs a paid
-search API key and Step 16 needs `pgvector`; neither is available and neither
-blocks the remaining work.
+Step order note: 14 → 17 → 18 → 19 → 20 → 15 was intentional; 15 was finished
+last because the earlier plan assumed it needed a paid search key. It does not:
+`wikipedia` and `searxng` are keyless, and the keyless Wikipedia path is the one
+verified against the real internet. Step 16 still needs `pgvector` (not
+installed) and still blocks nothing.
 
 The remaining work is in the **In progress — product shell integration** section
-above, in this order: real providers, SSE, lineage endpoints, and one shared flag
-store.
+above, in this order: real image providers, SSE, lineage endpoints, and one
+shared flag store. Web research is now available to the shell with no code
+change (`AGENT_WEB_PROVIDER=wikipedia` in its `backend/.env`), because
+`build_web_provider` reads the same settings the shell already loads.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`
