@@ -33,8 +33,13 @@ from pigamagic_agent.agent.hashing import canonical_json, sha256_bytes
 from pigamagic_agent.agent.plan import ShootPlan
 from pigamagic_agent.agent.profiles import VenueProfile
 from pigamagic_agent.agent.prompts import AssembledPrompt, assemble_for_plan
-from pigamagic_agent.agent.providers.base import LLMProvider, VisionProvider, WebProvider
-from pigamagic_agent.agent.research import research_venue
+from pigamagic_agent.agent.providers.base import (
+    LLMProvider,
+    ProviderError,
+    VisionProvider,
+    WebProvider,
+)
+from pigamagic_agent.agent.research import research_venue, unreachable_venue_outcome
 from pigamagic_agent.agent.safety import SafetyRefusal, check_brief
 
 BRIEFS_DIR = Path(__file__).parent / "data" / "briefs"
@@ -184,11 +189,21 @@ async def run_pipeline(
     if cast_override is not None:
         cast = list(cast_override)
     elif references:
-        analysis = await analyze_references(references, vision=vision, settings=active)
-        cast = analysis.cast
-        warnings.extend(analysis.warnings)
-        if not cast:
-            warnings.append("No people detected in the reference images.")
+        try:
+            analysis = await analyze_references(references, vision=vision, settings=active)
+            cast = analysis.cast
+            warnings.extend(analysis.warnings)
+            if not cast:
+                warnings.append("No people detected in the reference images.")
+        except ProviderError as exc:
+            # A vision provider that is down or keyless must not turn a shoot
+            # into an error page. The cast is then unknown, which the planner
+            # already knows how to work without.
+            cast = []
+            warnings.append(
+                f"Reference photos could not be analysed ({exc}); planning without "
+                "a known cast, so face consistency will be weaker."
+            )
     else:
         cast = []
         warnings.append("No reference images supplied; planning without a known cast.")
@@ -198,9 +213,17 @@ async def run_pipeline(
         venue = venue_override
         venue_sources: list[str] = list(venue.sources)
     else:
-        outcome = await research_venue(
-            brief.venue_name, brief.event, web=web, vision=vision, settings=active, pack=conventions
-        )
+        try:
+            outcome = await research_venue(
+                brief.venue_name, brief.event, web=web, vision=vision, settings=active, pack=conventions
+            )
+        except ProviderError as exc:
+            # Same rule: an unresearchable venue is a warning, not a failure.
+            # The honest-ignorance profile is exactly what we would have got had
+            # the search simply returned nothing.
+            outcome = unreachable_venue_outcome(
+                brief.venue_name, brief.event, conventions, reason=str(exc)
+            )
         venue = outcome.profile
         venue_sources = list(outcome.sources)
         warnings.extend(outcome.warnings)

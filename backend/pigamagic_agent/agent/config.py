@@ -39,6 +39,11 @@ ProviderName = Literal[
     "brave",
     "searxng",
     "wikipedia",
+    "duckduckgo",
+    "ddg",
+    "serper",
+    "groq",
+    "nemotron",
     "custom",
 ]
 
@@ -91,10 +96,24 @@ class AgentSettings(BaseSettings):
     # "use the adapter's own default" (which SearXNG does not have).
     web_base_url: str = ""
 
+    # Base URLs for the chat-style providers (LLM and vision). Blank means the
+    # adapter's own endpoint: Groq for the planner, NVIDIA NIM for vision.
+    llm_base_url: str = ""
+    vision_base_url: str = ""
+
     # --- NVIDIA NIM / Black Forest Labs ------------------------------------
     # The sample implementation reads these two names, so they are kept as-is.
-    # `nvidia_api_key` is an alias for `image_api_key`; either will work.
+    # `nvidia_api_key` is an alias for `image_api_key` and for `vision_api_key`;
+    # one NVIDIA key is enough for both NIM surfaces.
     nvidia_api_key: str = ""
+
+    # Groq serves the free planner (`openai/gpt-oss-120b`); `groq_api_key` is an
+    # alias for `llm_api_key`.
+    groq_api_key: str = ""
+
+    # Serper signs its requests with a key of its own; accept the name its own
+    # dashboard uses as an alias for `web_api_key`.
+    serper_api_key: str = ""
     nvidia_image_base_url: str = ""
     # A self-hosted NIM accepts real reference images (up to 8). The hosted
     # preview at build.nvidia.com accepts only predefined example images, so
@@ -102,6 +121,10 @@ class AgentSettings(BaseSettings):
     nvidia_nim_self_hosted: bool = False
 
     # --- Models -------------------------------------------------------------
+    # Blank = the adapter's pinned current default:
+    #   groq      -> openai/gpt-oss-120b        (planner, free tier)
+    #   nemotron  -> nvidia/nemotron-nano-12b-v2-vl  (vision, free tier)
+    #   nvidia    -> flux.3-image-klein        (image, via NVIDIA NIM)
     llm_model: str = ""
     vision_model: str = ""
     image_model: str = ""
@@ -204,15 +227,17 @@ class AgentSettings(BaseSettings):
         """
         missing: list[str] = []
         for provider_name, key in (
-            (self.llm_provider, self.llm_api_key),
-            (self.vision_provider, self.vision_api_key),
-            (self.image_provider, self.image_api_key),
+            (self.llm_provider, self.llm_api_key or self.groq_api_key),
+            (self.vision_provider, self.vision_api_key or self.nvidia_api_key),
+            (self.image_provider, self.image_api_key or self.nvidia_api_key),
         ):
             if provider_name != "fixture" and not key.strip():
                 missing.append(f"{provider_name} (key missing)")
 
         if self.web_provider == "brave" and not self.web_api_key.strip():
             missing.append("brave (key missing)")
+        elif self.web_provider == "serper" and not (self.web_api_key or self.serper_api_key).strip():
+            missing.append("serper (key missing)")
         elif self.web_provider == "searxng" and not self.web_base_url.strip():
             missing.append("searxng (base url missing)")
         return missing

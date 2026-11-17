@@ -27,9 +27,12 @@ from pigamagic_agent.agent.profiles import (
     VenueProfile,
     WardrobeProfile,
 )
-from pigamagic_agent.agent.providers.llm_fixture import FailingLLMProvider, FixtureLLMProvider
-from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
-from pigamagic_agent.agent.providers.web_fixture import FixtureWebProvider
+from pigamagic_agent.agent.providers.llm_fixture import FailingLLMProvider
+from pigamagic_agent.agent.providers.registry import (
+    build_llm_provider,
+    build_vision_provider,
+    build_web_provider,
+)
 from pigamagic_agent.agent.safety import SafetyRefusal
 
 
@@ -84,13 +87,15 @@ async def _build(brief_name: str, *, degraded: bool, prompt_budget: int | None) 
     settings = get_settings()
     brief = load_brief(brief_name)
 
-    llm = FailingLLMProvider() if degraded else FixtureLLMProvider()
+    # `--degraded` simulates a planner outage regardless of configuration, so it
+    # wraps whichever provider was selected rather than replacing the choice.
+    llm = FailingLLMProvider() if degraded else build_llm_provider(settings)
 
     return await run_pipeline(
         brief,
         llm=llm,
-        vision=FixtureVisionProvider(),
-        web=FixtureWebProvider(),
+        vision=build_vision_provider(settings),
+        web=build_web_provider(settings),
         settings=settings,
         cast_override=demo_cast(brief.event),
         venue_override=_demo_venue(brief),

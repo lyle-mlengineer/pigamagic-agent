@@ -399,7 +399,7 @@ def missing_key_error(name: str, env_var: str = "AGENT_WEB_API_KEY") -> Provider
     """One phrasing for every keyed adapter, so setup errors read the same."""
     return ProviderNotConfigured(
         f"{name} needs a search API key. Set {env_var} in .env, or use the "
-        "keyless wikipedia/searxng providers, or stay on the offline fixture."
+        "keyless duckduckgo/wikipedia/searxng providers, or stay on the offline fixture."
     )
 
 

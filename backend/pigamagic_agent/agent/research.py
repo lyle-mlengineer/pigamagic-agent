@@ -620,6 +620,33 @@ def _deal_with_ignorance(
 # --------------------------------------------------------------------------
 
 
+def unreachable_venue_outcome(
+    venue: str,
+    event: str,
+    pack: ConventionPack | None = None,
+    *,
+    reason: str,
+) -> VenueResearchOutcome:
+    """The honest-ignorance outcome for a research provider that failed.
+
+    A search provider that is keyless, rate-limited or down tells us nothing
+    about the venue, which is exactly the same fact as "the search returned no
+    results". Producing that same low-confidence profile keeps the product
+    promise (a shot list with a warning) instead of turning a missing key into an
+    error page.
+    """
+    return _deal_with_ignorance(
+        venue_key=normalize_venue_key(venue, event),
+        venue=venue,
+        event=event,
+        pack=pack,
+        store=InMemoryVenueCache(),
+        cache_key=venue_research_key(venue, event),
+        reason=reason,
+        search_calls=0,
+    )
+
+
 def _images_in_text(text: str) -> list[str]:
     """Find image-like URLs mentioned in extracted page text."""
     return re.findall(r"https?://\S+?\.(?:png|jpe?g|webp)", text)
@@ -673,4 +700,5 @@ __all__ = [
     "rank_hits",
     "rank_images",
     "research_venue",
+    "unreachable_venue_outcome",
 ]

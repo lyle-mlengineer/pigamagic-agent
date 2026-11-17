@@ -276,12 +276,23 @@ Settings are loaded by `pydantic-settings` with the `AGENT_` prefix. The loader 
 
 | Variable | Values | Default |
 | --- | --- | --- |
-| `AGENT_LLM_PROVIDER` | `fixture` | `fixture` |
-| `AGENT_VISION_PROVIDER` | `fixture` | `fixture` |
-| `AGENT_WEB_PROVIDER` | `fixture` | `fixture` |
+| `AGENT_LLM_PROVIDER` | `fixture`, `groq` | `fixture` |
+| `AGENT_VISION_PROVIDER` | `fixture`, `nemotron` | `fixture` |
+| `AGENT_WEB_PROVIDER` | `fixture`, `duckduckgo`, `wikipedia`, `searxng`, `serper`, `brave` | `fixture` |
 | `AGENT_IMAGE_PROVIDER` | `fixture`, `nvidia`, `huggingface`, `qwen`, `gemini`, `openai`, `fal` | `fixture` |
 
-Aliases accepted by the image provider switch: `google`/`nano-banana` → Gemini, `flux` → fal, `hf`/`local`/`colab`/`transformers`/`diffusers`/`flux-local`/`sd` → Hugging Face, `qwen` → Hugging Face with the identity-preserving Qwen default, `nim`/`bfl`/`black-forest-labs` → NVIDIA.
+Aliases accepted by the image provider switch: `google`/`nano-banana` → Gemini, `flux` → fal, `hf`/`local`/`colab`/`transformers`/`diffusers`/`flux-local`/`sd` → Hugging Face, `qwen` → Hugging Face with the identity-preserving Qwen default, `nim`/`bfl`/`black-forest-labs` → NVIDIA. The other switches have aliases too: `gpt-oss`/`gptoss`/`oss` → Groq, `nvidia`/`nvidia-vl`/`nim` → Nemotron VL, `ddg`/`duck-duck-go` → DuckDuckGo, `wiki` → Wikipedia, `searx` → SearXNG, `brave-search` → Brave.
+
+The shipped real stack (all free tiers, no credit card):
+
+| Surface | Provider | Model | Key |
+| --- | --- | --- | --- |
+| Planner / compiler | `groq` | `openai/gpt-oss-120b` | `AGENT_LLM_API_KEY` (free at <https://console.groq.com>) |
+| Reference + venue vision | `nemotron` | `nvidia/nemotron-nano-12b-v2-vl` | `AGENT_NVIDIA_API_KEY` (free at <https://build.nvidia.com>) |
+| Image | `nvidia` | `flux.3-image-klein` | `AGENT_NVIDIA_API_KEY` |
+| Web research | `duckduckgo` | DuckDuckGo Lite | none — or `serper` with `AGENT_WEB_API_KEY` |
+
+DuckDuckGo is the only zero-setup real search, but it is an undocumented endpoint that rate-limits: a bot challenge is reported as a retryable provider error, never as "this venue has no web presence". `serper` (Google JSON, ~$0.001/query) is the reliable paid alternative and reports every query to the budget ledger.
 
 `fixture` needs **no** credentials and never touches the network. Everything below it can be left blank while you are on fixtures.
 
@@ -289,11 +300,11 @@ Aliases accepted by the image provider switch: `google`/`nano-banana` → Gemini
 
 | Variable | Used by | Notes |
 | --- | --- | --- |
-| `AGENT_LLM_API_KEY` | LLM provider | blank while on fixtures |
-| `AGENT_VISION_API_KEY` | vision provider | blank while on fixtures |
+| `AGENT_LLM_API_KEY` | Groq planner | also readable as `AGENT_GROQ_API_KEY` |
+| `AGENT_VISION_API_KEY` | Nemotron VL | falls back to `AGENT_NVIDIA_API_KEY` |
 | `AGENT_IMAGE_API_KEY` | Gemini / OpenAI / fal / Hugging Face | for Hugging Face this is an **HF token**, only needed for gated models |
-| `AGENT_WEB_API_KEY` | web research | blank while on fixtures |
-| `AGENT_NVIDIA_API_KEY` | NVIDIA NIM | get one at <https://build.nvidia.com> → profile → API Keys; used only when `AGENT_IMAGE_PROVIDER=nvidia` |
+| `AGENT_WEB_API_KEY` | Serper / Brave | also readable as `AGENT_SERPER_API_KEY`; keyless providers need nothing |
+| `AGENT_NVIDIA_API_KEY` | NVIDIA NIM (image **and** vision) | get one at <https://build.nvidia.com> → profile → API Keys |
 | `AGENT_NVIDIA_IMAGE_BASE_URL` | NVIDIA NIM | default `https://ai.api.nvidia.com/v1/genai/black-forest-labs` |
 | `AGENT_NVIDIA_NIM_SELF_HOSTED` | NVIDIA NIM | `false` on the hosted preview; set `true` only for your own NIM container (it is the only mode that can use real reference faces) |
 
@@ -426,7 +437,7 @@ Exit codes: `0` success, `1` eval/render failure, `2` unknown brief, `3` provide
 
 ### 2. The local API server
 
-`create_app()` is a factory: the API needs providers and a ledger injected, so `uvicorn pigamagic_agent.api:app` alone will not work. `backend/scripts/serve.py` is the ready-made local host — it wires fixture providers, the configured blob store, and a seeded credit balance:
+`create_app()` is a factory: the API needs providers and a ledger injected, so `uvicorn pigamagic_agent.api:app` alone will not work. `backend/scripts/serve.py` is the ready-made local host — it builds every provider from `AGENT_*_PROVIDER`, the configured blob store, and a seeded credit balance:
 
 ```bash
 cd backend

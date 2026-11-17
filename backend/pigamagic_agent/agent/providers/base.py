@@ -61,8 +61,20 @@ class ProviderError(AgentError):
         return " ".join(parts)
 
 
-class ProviderNotConfigured(AgentError):
-    """The selected provider is missing credentials or is unimplemented."""
+class ProviderNotConfigured(ProviderError):
+    """The selected provider is missing credentials or is unimplemented.
+
+    Deliberately a `ProviderError` with `retryable=False`, not a bare
+    `AgentError`. Every degrade-gracefully ladder in the pipeline catches
+    `ProviderError` (compile falls back to a procedural plan, research admits it
+    found nothing, render records a failed shot). While this lived outside that
+    hierarchy, a keyless real provider raised straight through those ladders and
+    killed the process with a traceback — the exact opposite of the design's
+    "the caller always gets a usable plan plus warnings".
+    """
+
+    def __init__(self, message: str, *, provider: str = "") -> None:
+        super().__init__(message, provider=provider, retryable=False)
 
 
 class OfflineModeError(ProviderError):

@@ -176,7 +176,7 @@ def describe_image_providers() -> list[dict[str, Any]]:
 
 def available_web_providers() -> tuple[str, ...]:
     """Search adapters a host can select with AGENT_WEB_PROVIDER."""
-    return ("fixture", "wikipedia", "searxng", "brave")
+    return ("fixture", "wikipedia", "duckduckgo", "searxng", "serper", "brave")
 
 
 def build_web_provider(
@@ -222,6 +222,20 @@ def build_web_provider(
             budget=budget,
         )
 
+    if chosen in {"duckduckgo", "ddg", "duck-duck-go"}:
+        from pigamagic_agent.agent.providers.web_duckduckgo import DuckDuckGoWebProvider
+
+        return DuckDuckGoWebProvider(settings=active, budget=budget)
+
+    if chosen in {"serper", "serper-dev"}:
+        from pigamagic_agent.agent.providers.web_serper import SerperWebProvider
+
+        return SerperWebProvider(
+            api_key=active.web_api_key or active.serper_api_key,
+            settings=active,
+            budget=budget,
+        )
+
     if chosen in {"brave", "brave-search"}:
         from pigamagic_agent.agent.providers.web_brave import BraveWebProvider
 
@@ -259,6 +273,18 @@ def describe_web_providers() -> list[dict[str, Any]]:
             "note": "keyless open web via your own SearXNG instance (JSON format enabled)",
         },
         {
+            "name": "duckduckgo",
+            "needs_key": False,
+            "needs_base_url": False,
+            "note": "keyless open web with no signup; rate-limits datacenter IPs",
+        },
+        {
+            "name": "serper",
+            "needs_key": True,
+            "needs_base_url": False,
+            "note": "Google's index as JSON; ~$0.001 per search, free starter credits",
+        },
+        {
             "name": "brave",
             "needs_key": True,
             "needs_base_url": False,
@@ -267,11 +293,136 @@ def describe_web_providers() -> list[dict[str, Any]]:
     ]
 
 
+# --------------------------------------------------------------------------
+# LLM and vision (the chat-completion providers)
+# --------------------------------------------------------------------------
+
+
+def available_llm_providers() -> tuple[str, ...]:
+    """Planner adapters a host can select with AGENT_LLM_PROVIDER."""
+    return ("fixture", "groq")
+
+
+def build_llm_provider(
+    settings: AgentSettings | None = None,
+    *,
+    name: str | None = None,
+) -> LLMProvider:
+    """Construct the configured planner.
+
+    `fixture` stays the default: a compile step must never be able to spend
+    money or reach the network by accident.
+    """
+    active = settings or get_settings()
+    chosen = (name or active.llm_provider or "fixture").strip().casefold()
+
+    if chosen in {"fixture", "fake", "offline"}:
+        from pigamagic_agent.agent.providers.llm_fixture import FixtureLLMProvider
+
+        return FixtureLLMProvider()
+
+    if chosen in {"groq", "gpt-oss", "gptoss", "oss"}:
+        from pigamagic_agent.agent.providers.llm_groq import (
+            DEFAULT_MODEL as GROQ_DEFAULT_MODEL,
+        )
+        from pigamagic_agent.agent.providers.llm_groq import GROQ_CHAT_URL, GroqLLMProvider
+
+        return GroqLLMProvider(
+            api_key=active.llm_api_key or active.groq_api_key,
+            base_url=active.llm_base_url.strip() or GROQ_CHAT_URL,
+            # A blank setting must keep the adapter's pinned default. Passing ""
+            # through overrode it, so every request went out with no model.
+            model=active.llm_model.strip() or GROQ_DEFAULT_MODEL,
+            settings=active,
+        )
+
+    raise ProviderNotConfigured(
+        f"Unknown llm provider {chosen!r}. Choose one of: "
+        f"{', '.join(available_llm_providers())}."
+    )
+
+
+def available_vision_providers() -> tuple[str, ...]:
+    """Vision adapters a host can select with AGENT_VISION_PROVIDER."""
+    return ("fixture", "nemotron")
+
+
+def build_vision_provider(
+    settings: AgentSettings | None = None,
+    *,
+    name: str | None = None,
+) -> VisionProvider:
+    """Construct the configured vision provider."""
+    active = settings or get_settings()
+    chosen = (name or active.vision_provider or "fixture").strip().casefold()
+
+    if chosen in {"fixture", "fake", "offline"}:
+        from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
+
+        return FixtureVisionProvider()
+
+    if chosen in {"nemotron", "nvidia", "nvidia-vl", "nim"}:
+        from pigamagic_agent.agent.providers.vision_nvidia import (
+            DEFAULT_MODEL as NVIDIA_VISION_MODEL,
+        )
+        from pigamagic_agent.agent.providers.vision_nvidia import (
+            NVIDIA_VISION_URL,
+            NvidiaVisionProvider,
+        )
+
+        return NvidiaVisionProvider(
+            api_key=active.vision_api_key or active.nvidia_api_key,
+            base_url=active.vision_base_url.strip() or NVIDIA_VISION_URL,
+            model=active.vision_model.strip() or NVIDIA_VISION_MODEL,
+            settings=active,
+        )
+
+    raise ProviderNotConfigured(
+        f"Unknown vision provider {chosen!r}. Choose one of: "
+        f"{', '.join(available_vision_providers())}."
+    )
+
+
+def describe_chat_providers() -> list[dict[str, Any]]:
+    """Capability summary for the planner and vision providers."""
+    return [
+        {
+            "kind": "llm",
+            "name": "fixture",
+            "needs_key": False,
+            "note": "offline deterministic planner",
+        },
+        {
+            "kind": "llm",
+            "name": "groq",
+            "needs_key": True,
+            "note": "openai/gpt-oss-120b on Groq, free tier, json_schema output",
+        },
+        {
+            "kind": "vision",
+            "name": "fixture",
+            "needs_key": False,
+            "note": "offline deterministic appearance analysis",
+        },
+        {
+            "kind": "vision",
+            "name": "nemotron",
+            "needs_key": True,
+            "note": "nvidia/nemotron-nano-12b-v2-vl on NVIDIA NIM, base64 image parts",
+        },
+    ]
+
+
 __all__ = [
     "available_image_providers",
+    "available_llm_providers",
+    "available_vision_providers",
     "available_web_providers",
     "build_image_provider",
+    "build_llm_provider",
+    "build_vision_provider",
     "build_web_provider",
+    "describe_chat_providers",
     "describe_image_providers",
     "describe_web_providers",
 ]

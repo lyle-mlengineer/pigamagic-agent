@@ -65,7 +65,8 @@
 | 19 eval harness | **DONE** | 33 tests; 799 total pass |
 | 20 safety console + purge paths | **DONE** | 25 tests; 824 total pass |
 | 11+ product shell / API | **PART DONE** | vendored + real generation wired; SSE/comment-edit still open |
-| provider switch | **DONE** | config-only (`AGENT_IMAGE_PROVIDER`); 3 sanity tests; 32 shell tests |
+| provider switch | **DONE** | config-only (`AGENT_*_PROVIDER`); 3 sanity tests; 32 shell tests |
+| 15b real chat + vision + search adapters | **DONE** | Groq `gpt-oss-120b`, Nemotron VL, DuckDuckGo, Serper; 53 tests; 959 total pass |
 
 ---
 
@@ -1460,8 +1461,83 @@ subprocess.
 cd backend && python -m pytest -q tests/agent/test_web_providers.py   # 77 passed
 cd backend && python -m pytest -q                                     # 906 passed
 cd backend && python -m pigamagic_agent.agent.cli research \
-    --venue "Stanley Hotel, Nairobi" --provider wikipedia             # exit 0, real details
+    --venue "Sarova Stanley, Nairobi" --provider duckduckgo           # exit 0, real details
 ```
+
+---
+
+## Completed step — 15b Real chat, vision and search adapters
+
+Everything the pipeline needs now has a real, free-tier adapter, and the choice
+is configuration rather than code:
+
+| Surface | Provider name | Model | Credential |
+| --- | --- | --- | --- |
+| planner / compiler | `groq` | `openai/gpt-oss-120b` | `AGENT_LLM_API_KEY` (or `AGENT_GROQ_API_KEY`) |
+| reference + venue vision | `nemotron` | `nvidia/nemotron-nano-12b-v2-vl` | `AGENT_VISION_API_KEY` → `AGENT_NVIDIA_API_KEY` |
+| image | `nvidia` | `flux.3-image-klein` | `AGENT_IMAGE_API_KEY` → `AGENT_NVIDIA_API_KEY` |
+| web research | `duckduckgo` (default real) | DuckDuckGo Lite | none |
+| web research (paid) | `serper` | Google JSON | `AGENT_WEB_API_KEY` (or `AGENT_SERPER_API_KEY`) |
+
+### What was built
+
+- `providers/chat_json.py` — one place that enforces "a chat completion must
+  return exactly one JSON object": strips fences and preamble, applies a shallow
+  schema check, drops undeclared keys, and distinguishes "burned its budget
+  thinking" (`reasoning_content`, no `content`) from "returned prose".
+- `providers/llm_groq.py` — `json_schema` with `strict: true`, one visible
+  fallback to `json_object` on HTTP 400, `reasoning_effort="low"`, and a token
+  floor high enough that a reasoning model cannot answer nothing.
+- `providers/vision_nvidia.py` — the reference photo travels as a base64 data
+  URI, never a public URL (SR-5), appearance-only policy in a *string* system
+  turn (NIM rejects content parts there), `people` required.
+- `providers/web_duckduckgo.py` — keyless search over DuckDuckGo Lite, with the
+  `uddg` redirect unwrapped so `fetch_page` downloads the venue and not a
+  redirect stub, ads dropped, and a bot-challenge page raised as a retryable
+  error instead of being read as "this venue has no web presence".
+- `providers/web_serper.py` — POST with `X-API-KEY`, `num` capped at the API
+  maximum, and every query reported to the budget ledger (~$0.001).
+- `registry.py` — `build_llm_provider`, `build_vision_provider`,
+  `build_web_provider`, aliases, and `describe_chat_providers` so the shell can
+  list what is actually available.
+- `cli.py` and `scripts/serve.py` build from the registry, so a real provider is
+  selected by `.env` alone.
+
+### Bugs found and fixed
+
+1. **`ProviderNotConfigured` was not a `ProviderError`.** It inherited straight
+   from `AgentError`, so every degrade-gracefully ladder missed it: a keyless
+   Groq setting killed the CLI with a traceback instead of falling back to a
+   procedural plan. Latent since Step 0.2 because fixtures never raise it; the
+   first real adapter made it reachable. It is now a non-retryable
+   `ProviderError`.
+2. **A blank model setting erased the pinned default.** The registry passed
+   `model=settings.llm_model` straight through, so `""` overrode the adapter's
+   default and every request went out with no model name at all. Blank now means
+   "keep the pin", and an explicit value still wins.
+3. **`run_pipeline` let vision and search failures escape.** An unanalysable
+   reference set or an unreachable search backend turned a shoot into a 500.
+   Both now degrade to "unknown cast" / `unreachable_venue_outcome` (the same
+   honest-ignorance profile as "search found nothing") with warnings.
+4. **Keyless Serper reported as a provider failure** (exit 2) rather than a setup
+   failure (exit 3) — the CLI now names the missing variable.
+
+### Proven end to end
+
+Real network, no keys: `cli research --venue "Sarova Stanley, Nairobi"
+--provider duckduckgo` → confidence 0.70, six sources fetched from the real
+hotel/travel sites, eight images downloaded, and signature details taken from
+their own prose. Keyless degradation: `AGENT_LLM_PROVIDER=groq` with no key now
+prints a fallback plan (confidence 0.40, `[fallback plan]`) instead of a
+traceback.
+
+### Not verified
+
+The Groq and NVIDIA paths are built and unit-tested against a mock transport but
+have not been called with a real key — none exists in this working copy. Groq's
+`json_schema` behaviour on `gpt-oss-120b`, and whether the hosted Nemotron NIM
+accepts `image_url` data URIs for a real reference face, are the first two things
+to check once a key is available.
 
 ---
 
@@ -1693,7 +1769,7 @@ complete: comment -> edit works through chained generations.
 
 **Verify command:**
 ```bash
-cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q            # 906
+cd /d/git/potfolio/pigamagic-agent/backend && python -m pytest -q            # 959
 cd /d/git/potfolio/pigamagic/backend && ../venv/Scripts/python -m pytest -q   # 32
 cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 ```
@@ -1705,20 +1781,22 @@ cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q                                  # expect 906 passed
+cd backend && python -m pytest -q                                  # expect 959 passed
 cd backend && python -m pigamagic_agent.agent.cli eval             # exit 0 = eval gate
 cd backend && python -m pigamagic_agent.agent.cli research \
-    --venue "Stanley Hotel, Nairobi" --provider wikipedia --quiet   # exit 0 = real research works
+    --venue "Sarova Stanley, Nairobi" --provider duckduckgo --quiet # exit 0 = real search works
 cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q     # expect 32 passed
 cd ../pigamagic/backend && ./sync_agent.sh --check                 # vendored copy in sync
 cd ../pigamagic/backend && git log --oneline -3                    # latest shell work
 ```
 
-State to trust: **Steps 0.1–15 and 17–20 are complete and green (906 tests), and
-the agent is vendored into the product shell at
+State to trust: **Steps 0.1–15, 15b and 17–20 are complete and green (959
+tests), and the agent is vendored into the product shell at
 `pigamagic/backend/app/pigamagic_agent` generating real photos through the real
 credit ledger (32 shell tests), with comment -> edit working through three
-chained generations.**
+chained generations.** Every surface now has a real adapter selected by
+`AGENT_*_PROVIDER` (Groq planner, Nemotron VL vision, NVIDIA FLUX image,
+DuckDuckGo/Serper search); the fixtures stay the default so CI remains offline.
 
 Step order note: 14 → 17 → 18 → 19 → 20 → 15 was intentional; 15 was finished
 last because the earlier plan assumed it needed a paid search key. It does not:
@@ -1728,9 +1806,16 @@ installed) and still blocks nothing.
 
 The remaining work is in the **In progress — product shell integration** section
 above, in this order: real image providers, SSE, lineage endpoints, and one
-shared flag store. Web research is now available to the shell with no code
-change (`AGENT_WEB_PROVIDER=wikipedia` in its `backend/.env`), because
-`build_web_provider` reads the same settings the shell already loads.
+shared flag store. All four surfaces are already available to the shell with no
+code change -- `app/api/photos.py` builds them from the registry, so setting
+`AGENT_LLM_PROVIDER=groq`, `AGENT_VISION_PROVIDER=nemotron`,
+`AGENT_IMAGE_PROVIDER=nvidia` and `AGENT_WEB_PROVIDER=duckduckgo` in its
+`backend/.env` (see its `.env.example`) is the whole switch.
+
+First thing to do with a real key: run one shoot end to end and confirm Groq
+accepts the `json_schema` response format and that the hosted Nemotron NIM takes
+a base64 reference image. Both are unit-tested against a mock transport but have
+never been called for real -- no key exists in this working copy.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`
