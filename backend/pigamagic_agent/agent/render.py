@@ -189,6 +189,22 @@ def identity_refs_for(
     return selected or None
 
 
+def keeps_likeness(provider: ImageProvider) -> bool:
+    """True when this provider can condition on reference images at all.
+
+    A text-to-image endpoint (NVIDIA's hosted NIM, for one) cannot hold a real
+    person's face, so sending it references is pointless and calling it anyway
+    would produce a stranger in the frame. The vision model is what analyses the
+    references; the image model only generates. Providers that do not declare
+    `capabilities` are assumed capable — a silent refusal would be worse than a
+    warning.
+    """
+    capabilities = getattr(provider, "capabilities", None)
+    if capabilities is None:
+        return True
+    return bool(getattr(capabilities, "supports_identity_refs", True))
+
+
 async def render_plan(
     artifact: ShootArtifact,
     *,
@@ -236,6 +252,19 @@ async def render_plan(
     warnings: list[str] = []
     total = CostEstimate.zero()
 
+    # The image model generates; the vision model is what analysed the
+    # references. A provider that cannot accept reference images must not
+    # silently receive them either — it would refuse the whole shoot, so the
+    # run degrades honestly instead: photos, plus a warning naming the cost.
+    refs = reference_images
+    if refs and not keeps_likeness(provider):
+        refs = None
+        warnings.append(
+            f"{provider.name} generates without reference images, so these photos "
+            "will not keep the cast's likeness. Use an identity-capable provider "
+            "for a shoot of real people."
+        )
+
     for shot in shots:
         assembled = artifact.prompts.get(shot.node_id)
         if assembled is None:
@@ -255,7 +284,7 @@ async def render_plan(
                 provider=provider,
                 store=store,
                 ledger=ledger,
-                reference_images=reference_images,
+                reference_images=refs,
                 width=width,
                 height=height,
                 parent_id=parent_id,
@@ -511,6 +540,7 @@ __all__ = [
     "default_seed",
     "edit_seed",
     "identity_refs_for",
+    "keeps_likeness",
     "new_shoot_id",
     "render_edit",
     "render_plan",

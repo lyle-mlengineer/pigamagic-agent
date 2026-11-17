@@ -49,6 +49,7 @@ from pigamagic_agent.agent.providers.registry import (
     build_llm_provider,
     build_vision_provider,
     build_web_provider,
+    describe_active_stack,
     describe_chat_providers,
     describe_web_providers,
 )
@@ -576,6 +577,58 @@ def test_missing_credentials_understand_the_aliases() -> None:
     assert _settings(vision_provider="nemotron", nvidia_api_key="k").missing_credentials() == []
     assert _settings(web_provider="serper").missing_credentials() == ["serper (key missing)"]
     assert _settings(web_provider="duckduckgo").missing_credentials() == []
+
+
+def test_the_effective_stack_names_every_surface_it_will_use() -> None:
+    """The user's requested stack: answerable without a key or a network call."""
+    settings = _settings(
+        llm_provider="groq",
+        vision_provider="nemotron",
+        image_provider="nvidia",
+        web_provider="duckduckgo",
+        llm_api_key="gsk-test",
+        nvidia_api_key="nvapi-test",
+    )
+    rows = {row["surface"]: row for row in describe_active_stack(settings)}
+
+    assert rows["llm"]["provider"] == "groq"
+    assert rows["llm"]["model"] == GROQ_DEFAULT_MODEL
+    assert rows["vision"]["provider"] == "nemotron"
+    assert rows["vision"]["model"] == VISION_DEFAULT_MODEL
+    assert rows["image"]["provider"] == "nvidia"
+    # The documented NVIDIA route is hyphenated; the dotted form 404s.
+    assert rows["image"]["model"] == "flux-3-image-klein"
+    assert rows["web"]["provider"] == "duckduckgo"
+    assert rows["web"]["key_present"] is False
+    assert rows["web"]["usable"] is True  # keyless is not a fault
+    assert all(row["usable"] for row in rows.values())
+    # Likeness is the cost of the hosted NVIDIA image route, and it is stated.
+    assert "likeness" in rows["image"]["note"]
+
+
+def test_the_effective_stack_reports_a_missing_key_without_leaking_one() -> None:
+    settings = _settings(
+        llm_provider="groq",
+        vision_provider="nemotron",
+        image_provider="nvidia",
+        web_provider="serper",
+        llm_api_key="gsk-secret-value",
+    )
+    rows = {row["surface"]: row for row in describe_active_stack(settings)}
+
+    assert rows["llm"]["usable"] is True
+    assert rows["vision"]["usable"] is False
+    assert rows["vision"]["key_envs"] == ["AGENT_VISION_API_KEY", "AGENT_NVIDIA_API_KEY"]
+    assert rows["image"]["usable"] is False
+    assert rows["web"]["usable"] is False
+    assert "AGENT_SERPER_API_KEY" in rows["web"]["key_envs"]
+
+    # A diagnostic must never be the place a credential leaks.
+    import json as _json
+
+    dumped = _json.dumps(rows)
+    assert "gsk-secret-value" not in dumped
+    assert "nvapi" not in dumped
 
 
 def test_the_capability_tables_only_name_real_providers() -> None:

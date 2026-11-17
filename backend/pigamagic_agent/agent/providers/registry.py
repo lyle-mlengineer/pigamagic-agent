@@ -413,6 +413,98 @@ def describe_chat_providers() -> list[dict[str, Any]]:
     ]
 
 
+#: Providers that work with no credential at all, so "no key" is not a fault.
+KEYLESS_PROVIDERS: frozenset[str] = frozenset({"fixture", "wikipedia", "searxng", "duckduckgo"})
+
+
+def describe_active_stack(settings: AgentSettings | None = None) -> list[dict[str, Any]]:
+    """What each surface will actually use, given the current settings.
+
+    The answer to "is it really Groq + Nemotron + FLUX Klein + DuckDuckGo?"
+    without spending a call. Every row reports the *resolved* provider, its
+    model, whether the credential it needs is present (never the value), and a
+    note where the choice has a cost the operator should know about.
+
+    A row with `usable: False` means the configured provider would raise
+    `ProviderNotConfigured` at the first call, so the pipeline would degrade.
+    """
+    active = settings or get_settings()
+
+    surfaces: list[tuple[str, str, list[str], Callable[[], Any]]] = [
+        (
+            "llm",
+            active.llm_provider,
+            ["AGENT_LLM_API_KEY", "AGENT_GROQ_API_KEY"],
+            lambda: build_llm_provider(active),
+        ),
+        (
+            "vision",
+            active.vision_provider,
+            ["AGENT_VISION_API_KEY", "AGENT_NVIDIA_API_KEY"],
+            lambda: build_vision_provider(active),
+        ),
+        (
+            "image",
+            active.image_provider,
+            ["AGENT_IMAGE_API_KEY", "AGENT_NVIDIA_API_KEY"],
+            lambda: build_image_provider(active),
+        ),
+        (
+            "web",
+            active.web_provider,
+            ["AGENT_WEB_API_KEY", "AGENT_SERPER_API_KEY"],
+            lambda: build_web_provider(active),
+        ),
+    ]
+
+    rows: list[dict[str, Any]] = []
+    for surface, configured, key_names, factory in surfaces:
+        row: dict[str, Any] = {
+            "surface": surface,
+            "configured": configured,
+            "provider": configured,
+            "model": "",
+            "key_envs": key_names,
+            "key_present": False,
+            "usable": True,
+            "note": "",
+        }
+        try:
+            provider = factory()
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            row.update(usable=False, note=f"cannot be built: {exc}")
+            rows.append(row)
+            continue
+
+        row["provider"] = getattr(provider, "name", configured)
+        row["model"] = str(getattr(provider, "model", "") or "")
+        row["key_present"] = bool(_resolved_key(active, surface).strip())
+        row["usable"] = bool(row["key_present"] or row["provider"] in KEYLESS_PROVIDERS)
+        if not row["usable"] and not row["note"]:
+            row["note"] = "needs a key; calls raise ProviderNotConfigured and the pipeline degrades"
+
+        caps = getattr(provider, "capabilities", None)
+        if row["usable"] and caps is not None and not getattr(
+            caps, "supports_identity_refs", True
+        ):
+            row["note"] = "text-to-image only: references are dropped and likeness is not kept"
+        elif row["usable"] and surface == "web" and row["provider"] == "duckduckgo":
+            row["note"] = "keyless; rate-limits datacenter IPs"
+        rows.append(row)
+    return rows
+
+
+def _resolved_key(settings: AgentSettings, surface: str) -> str:
+    """The credential a surface would use, following the documented aliases."""
+    if surface == "llm":
+        return settings.llm_api_key or settings.groq_api_key
+    if surface == "vision":
+        return settings.vision_api_key or settings.nvidia_api_key
+    if surface == "image":
+        return settings.image_api_key or settings.nvidia_api_key
+    return settings.web_api_key or settings.serper_api_key
+
+
 __all__ = [
     "available_image_providers",
     "available_llm_providers",
@@ -422,6 +514,7 @@ __all__ = [
     "build_llm_provider",
     "build_vision_provider",
     "build_web_provider",
+    "describe_active_stack",
     "describe_chat_providers",
     "describe_image_providers",
     "describe_web_providers",

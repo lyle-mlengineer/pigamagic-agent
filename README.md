@@ -233,7 +233,7 @@ cp .env.example .env      # then edit it — see the next section
 
 # 5. prove the install
 cd backend
-python -m pytest -q                     # expect: 829 passed
+python -m pytest -q                     # expect: 971 passed
 python -m pigamagic_agent.agent.cli briefs
 ```
 
@@ -289,8 +289,16 @@ The shipped real stack (all free tiers, no credit card):
 | --- | --- | --- | --- |
 | Planner / compiler | `groq` | `openai/gpt-oss-120b` | `AGENT_LLM_API_KEY` (free at <https://console.groq.com>) |
 | Reference + venue vision | `nemotron` | `nvidia/nemotron-nano-12b-v2-vl` | `AGENT_NVIDIA_API_KEY` (free at <https://build.nvidia.com>) |
-| Image | `nvidia` | `flux.3-image-klein` | `AGENT_NVIDIA_API_KEY` |
+| Image | `nvidia` | `flux-3-image-klein` | `AGENT_NVIDIA_API_KEY` |
 | Web research | `duckduckgo` | DuckDuckGo Lite | none — or `serper` with `AGENT_WEB_API_KEY` |
+
+One command reports what the environment will actually select, and names the variable to set for any surface that cannot run (it prints no secret values and makes no network call):
+
+```bash
+cd backend
+python -m pigamagic_agent.agent.cli providers
+python -m pigamagic_agent.agent.cli providers --json   # exit 3 if a key is missing
+```
 
 DuckDuckGo is the only zero-setup real search, but it is an undocumented endpoint that rate-limits: a bot challenge is reported as a retryable provider error, never as "this venue has no web presence". `serper` (Google JSON, ~$0.001/query) is the reliable paid alternative and reports every query to the budget ledger.
 
@@ -306,7 +314,7 @@ DuckDuckGo is the only zero-setup real search, but it is an undocumented endpoin
 | `AGENT_WEB_API_KEY` | Serper / Brave | also readable as `AGENT_SERPER_API_KEY`; keyless providers need nothing |
 | `AGENT_NVIDIA_API_KEY` | NVIDIA NIM (image **and** vision) | get one at <https://build.nvidia.com> → profile → API Keys |
 | `AGENT_NVIDIA_IMAGE_BASE_URL` | NVIDIA NIM | default `https://ai.api.nvidia.com/v1/genai/black-forest-labs` |
-| `AGENT_NVIDIA_NIM_SELF_HOSTED` | NVIDIA NIM | `false` on the hosted preview; set `true` only for your own NIM container (it is the only mode that can use real reference faces) |
+| `AGENT_NVIDIA_NIM_SELF_HOSTED` | NVIDIA NIM | `false` on the hosted preview; set `true` only for your own NIM container. It changes the *host*, not the capability: this adapter never uploads an image |
 
 ### Models
 
@@ -316,7 +324,7 @@ Leave blank to use the provider's pinned, tested default.
 | --- | --- |
 | `AGENT_LLM_MODEL` | provider default |
 | `AGENT_VISION_MODEL` | provider default |
-| `AGENT_IMAGE_MODEL` | `gemini` → `gemini-3.1-flash-image`; `openai` → `gpt-image-2.5-flare`; `fal` → `blackforestlabs/flux-3/text-to-image`; `nvidia` → `flux.3-image-klein`; `huggingface` → `black-forest-labs/FLUX.1-schnell`; `qwen` → `Qwen/Qwen-Image-Edit-2509` |
+| `AGENT_IMAGE_MODEL` | `gemini` → `gemini-3.1-flash-image`; `openai` → `gpt-image-2.5-flare`; `fal` → `blackforestlabs/flux-3/text-to-image`; `nvidia` → `flux-3-image-klein`; `huggingface` → `black-forest-labs/FLUX.1-schnell`; `qwen` → `Qwen/Qwen-Image-Edit-2509` |
 
 **Identity-preserving local models:** `Qwen/Qwen-Image-Edit-2509` (up to 3 reference faces, the right choice for this app) and `black-forest-labs/FLUX.1-Kontext-dev` (gated, 1 reference). Text-only local models: `FLUX.1-schnell` (ungated, 4 steps, fastest), `FLUX.1-dev` (gated), `Qwen/Qwen-Image`, `stabilityai/stable-diffusion-3.5-large`.
 
@@ -517,7 +525,9 @@ Pick one provider in `.env` and put its key in `AGENT_IMAGE_API_KEY` (NVIDIA als
 
 Two things worth knowing before you spend anything:
 
-1. **The hosted NVIDIA preview cannot preserve a real face.** It accepts only predefined example images, so the adapter declares `supports_identity_refs=False` and refuses instead of quietly producing a stranger. Self-hosted NIM (`AGENT_NVIDIA_NIM_SELF_HOSTED=true`) declares 8 refs. It also caps prompts at 2000 characters, which the adapter enforces by trimming reference notes first — subject and action always survive.
+1. **The hosted NVIDIA preview cannot preserve a real face**, and the adapter does not try: it is **text-to-image only**, so `supports_identity_refs` and `supports_structural_ref` are both `False` and no request from it ever carries image bytes — no reference photo, no `mode: "Image Editing"`. Reference photos are the **vision** model's job (Nemotron VL reads them; the observations become prompt text). On a shoot that has references, `render_plan` drops them for this provider and adds a warning that likeness will not be preserved, so the run still produces photos instead of failing every shot. It also caps prompts at 2000 characters, which the adapter enforces by trimming reference notes first — subject and action always survive.
+
+The request it sends is exactly the documented parameter set for `black-forest-labs/flux-3-image-klein` — `prompt`, `width`, `height`, `samples`, `steps`, `cfg_scale`, `seed` — with `samples=1` and 1024×1024, inside the documented 512–1568 / step-16 grid and under the 1,062,400-pixel cap. The route is hyphenated; `flux.3-image-klein` (dots) is not a valid slug and 404s.
 2. **Set `AGENT_IMAGE_BUDGET_USD` before the first paid run.** `0.0` means *unlimited*, and the budget ledger only refuses calls once a positive ceiling is set. A single runaway loop can otherwise drain an account.
 
 Render through a real provider from the CLI:
@@ -698,7 +708,7 @@ p.write_text(text)
 
 ```bash
 cd backend
-python -m pytest -q                          # 829 passed, ~100 s, fully offline
+python -m pytest -q                          # 971 passed, ~130 s, fully offline
 python -m pytest -q tests/agent/test_render.py
 python -m pigamagic_agent.agent.cli eval     # exit 0 = every golden brief still compiles
 ```

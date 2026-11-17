@@ -12,6 +12,7 @@ Properties that matter:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import io
 from typing import Any
@@ -486,6 +487,86 @@ def test_identity_refs_only_include_people_in_frame() -> None:
 def test_identity_refs_returns_none_without_references() -> None:
     artifact = _artifact()
     assert identity_refs_for(artifact.plan.shots[0], None) is None
+
+
+def _png(width: int = 32, height: int = 32) -> bytes:
+    return render_fixture_png(prompt="reference", width=width, height=height)
+
+
+def test_render_drops_refs_for_a_provider_that_cannot_keep_likeness(tmp_path) -> None:
+    """NVIDIA's hosted NIM is text-to-image; a shoot must still render.
+
+    Passing references to it would raise on every shot, so the run would come
+    back empty. Dropping them and saying so is the honest outcome: real photos,
+    no likeness, and a warning that names it.
+    """
+    from pigamagic_agent.agent.providers.image_nvidia import NvidiaImageProvider
+
+    artifact = _artifact(max_shots=2)
+    refs = {key: [_png()] for key in artifact.plan.person_keys()}
+    provider = NvidiaImageProvider(api_key="nvapi-test", settings=_settings())
+    seen: list[dict[str, list[bytes]] | None] = []
+
+    async def fake_request(method, url, **kwargs):
+        return {"artifacts": [{"base64": base64.b64encode(_png()).decode("ascii")}]}
+
+    provider.request_json = fake_request  # type: ignore[method-assign]
+    original_generate = provider.generate
+
+    async def spy_generate(**kwargs):
+        seen.append(kwargs.get("identity_refs"))
+        return await original_generate(**kwargs)
+
+    provider.generate = spy_generate  # type: ignore[method-assign]
+
+    store = LocalBlobStore(root=tmp_path)
+    outcome = asyncio.run(
+        render_plan(
+            artifact,
+            provider=provider,
+            store=store,
+            settings=_settings(),
+            reference_images=refs,
+            max_shots=2,
+        )
+    )
+
+    assert outcome.count == 2
+    assert not outcome.failures
+    assert all(ref is None for ref in seen)
+    assert any("likeness" in warning.casefold() for warning in outcome.warnings)
+
+
+def test_render_keeps_refs_for_a_provider_that_supports_them(tmp_path) -> None:
+    """The same shoot through a capable provider still anchors identity."""
+    artifact = _artifact(max_shots=1)
+    refs = {key: [_png()] for key in artifact.plan.person_keys()}
+    provider = FixtureImageProvider(settings=_settings())
+    seen: list[dict[str, list[bytes]] | None] = []
+
+    original_generate = provider.generate
+
+    async def spy_generate(**kwargs):
+        seen.append(kwargs.get("identity_refs"))
+        return await original_generate(**kwargs)
+
+    provider.generate = spy_generate  # type: ignore[method-assign]
+
+    store = LocalBlobStore(root=tmp_path)
+    outcome = asyncio.run(
+        render_plan(
+            artifact,
+            provider=provider,
+            store=store,
+            settings=_settings(),
+            reference_images=refs,
+            max_shots=1,
+        )
+    )
+
+    assert outcome.count == 1
+    assert seen and seen[0]
+    assert not any("likeness" in warning.casefold() for warning in outcome.warnings)
 
 
 # --------------------------------------------------------------------------

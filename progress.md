@@ -67,7 +67,9 @@
 | 11+ product shell / API | **PART DONE** | vendored + real generation wired; SSE/comment-edit still open |
 | provider switch | **DONE** | config-only (`AGENT_*_PROVIDER`); 3 sanity tests; 32 shell tests |
 | 15b real chat + vision + search adapters | **DONE** | Groq `gpt-oss-120b`, Nemotron VL, DuckDuckGo, Serper; 53 tests; 963 total pass |
-| evidence quality (page chrome) | **DONE — UNCOMMITTED** | `extract_details` dedupe/label stripping; 4 tests; see the resume section at the bottom |
+| evidence quality (page chrome) | **DONE** | `extract_details` dedupe/label stripping; 4 tests |
+| separation of duties (vision vs image) | **DONE** | NVIDIA is text-to-image only; `render_plan` drops refs + warns; 5 tests; 965 total pass |
+| provider handoff (documented NIM slug + `providers` diagnostic) | **DONE** | `flux-3-image-klein`, documented payload only, `cli providers`; 6 tests; 971 total pass |
 
 ---
 
@@ -1476,7 +1478,7 @@ is configuration rather than code:
 | --- | --- | --- | --- |
 | planner / compiler | `groq` | `openai/gpt-oss-120b` | `AGENT_LLM_API_KEY` (or `AGENT_GROQ_API_KEY`) |
 | reference + venue vision | `nemotron` | `nvidia/nemotron-nano-12b-v2-vl` | `AGENT_VISION_API_KEY` → `AGENT_NVIDIA_API_KEY` |
-| image | `nvidia` | `flux.3-image-klein` | `AGENT_IMAGE_API_KEY` → `AGENT_NVIDIA_API_KEY` |
+| image | `nvidia` | `flux-3-image-klein` | `AGENT_IMAGE_API_KEY` → `AGENT_NVIDIA_API_KEY` |
 | web research | `duckduckgo` (default real) | DuckDuckGo Lite | none |
 | web research (paid) | `serper` | Google JSON | `AGENT_WEB_API_KEY` (or `AGENT_SERPER_API_KEY`) |
 
@@ -1777,9 +1779,185 @@ cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 
 ---
 
+## Completed step — separation of duties: vision analyses, image model generates
+
+**Status: DONE.** Full suite **965 passed** (5 new/changed tests in
+`test_image_provider.py` and `test_render.py`). Offline, no credentials.
+
+### The division, stated once
+
+| job | provider | what it receives |
+| --- | --- | --- |
+| read the reference photos | `vision` (`nemotron`, `nvidia/nemotron-nano-12b-v2-vl`) | the actual image bytes, as a base64 data URI |
+| generate a new photograph | `image` (`nvidia`, `flux-3-image-klein`) | **text only** |
+
+Before this change the NVIDIA image adapter could put bytes on the wire
+(`mode: "Image Editing"` + `image: data:image/png;base64,…`) when a
+`structural_ref` was supplied and the endpoint was declared self-hosted. That
+path is gone: the user asked for NVIDIA to be generation-only, and it now is.
+
+**What was removed from `image_nvidia.py`:**
+
+- the `mode: "Image Editing"` branch and every `payload["image"]` assignment —
+  the key is not sent at all, not even as `None`;
+- the `NVIDIA_NIM_SELF_HOSTED` capability *upgrade* (`supports_identity_refs=True`,
+  `max_identity_refs=8`, `supports_structural_ref=True`, `_SELF_HOSTED_SIZES`).
+  Self-hosted now changes the **host** only. Declared capabilities and the
+  request shape cannot disagree, so the adapter cannot advertise an upload it
+  will not send, or send one it does not advertise;
+- the `name: str = "nvidia"` annotation (an annotated field in a dataclass
+  subclass is the shadowing trap recorded in Step 8).
+
+### The bug the change exposed, and why render had to change too
+
+`_render_one` passed `identity_refs_for(shot, …)` straight to `provider.generate`.
+Every shot with a person in frame therefore handed references to a provider that
+declares `supports_identity_refs=False`, and the base class **correctly** refused
+with a non-retryable `ProviderError`. Proven, not reasoned about: with the new
+filter disabled, `test_render_drops_refs_for_a_provider_that_cannot_keep_likeness`
+reports **`0 photos, every shot failed`**. A real NVIDIA shoot would have
+answered 502 with nothing in it.
+
+**Fix in `render.py`:** `keeps_likeness(provider)` reads
+`capabilities.supports_identity_refs` (defaulting to True when a provider declares
+no capabilities), and `render_plan` drops the references for providers that
+cannot use them, appending a warning that names the cost:
+
+> "nvidia generates without reference images, so these photos will not keep the
+> cast's likeness. Use an identity-capable provider for a shoot of real people."
+
+So the shoot still renders — real photos, no likeness, and the user is told which
+one they got. Dropping refs silently was the one outcome ruled out.
+
+### Gates proven non-vacuous
+
+| injected regression | fails |
+| --- | --- |
+| `render_plan` stops filtering refs by capability | `test_render_drops_refs_for_a_provider_that_cannot_keep_likeness` (0 photos, 2 failures) |
+| `image`/`Image Editing` re-added to the NVIDIA payload | `test_nvidia_always_sends_the_documented_payload`, `test_nvidia_never_uploads_a_structural_ref` |
+
+The positive direction is pinned too: `test_render_keeps_refs_for_a_provider_that_supports_them`
+uses the fixture provider and asserts the references still reach `generate`, so
+the filter cannot be "fixed" by dropping refs everywhere.
+
+Also updated to match: `README.md` and `.env.example` no longer claim self-hosted
+NIM can use real reference faces.
+
+**Verify command:**
+```bash
+cd backend && python -m pytest -q tests/agent/test_render.py tests/agent/test_image_provider.py   # 143 passed
+cd backend && python -m pytest -q                                             # 965 passed
+cd backend && python -m pigamagic_agent.agent.cli eval                         # exit 0, 13 briefs
+```
+
+---
+
+## Completed step — the NVIDIA image route was 404-ing on a typo
+
+**Status: DONE.** Full suite **971 passed** (6 new tests). Offline, no
+credentials, no spend.
+
+### The bug the live docs caught
+
+`NvidiaImageProvider` shipped `DEFAULT_MODEL = "flux.3-image-klein"` — **dots**.
+The published route is
+`POST https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein`
+— **hyphens** — and it is also the slug in your own `faceform/` samples
+(`flux-3-image-klein` via NVIDIA and via OpenRouter). The dotted form is not a
+model on that endpoint, so the first real shoot would have answered 404 with a
+unit-test suite that was entirely green: every test mocked `request_json` and
+asserted against the same wrong constant. This is the exact class of failure a
+fake transport cannot catch, and it was only visible by reading the API
+reference.
+
+**Fixed:** `DEFAULT_MODEL = "flux-3-image-klein"`, plus the four places that
+quoted the old slug (`.env.example`, README ×2, the config comment, the shell's
+`.env.example`). Both assertions that used to pin the typo now pin the documented
+value **and** assert the dotted form is absent, so the regression cannot return
+silently.
+
+### The request body now matches the documented parameter set
+
+The API reference for `flux-3-image-klein` lists exactly seven body parameters:
+`prompt`, `height`, `width`, `cfg_scale`, `image` (optional, preset
+`data:image/png;example_id,N` only), `samples` (must be 1), `seed`, `steps`.
+
+The adapter was sending an eighth key, `mode: "Image Generation"` — carried over
+from the older `flux.1-kontext-dev` edit/generate switch, which this endpoint does
+not document. The known-working curl for *this* model (and your `black_forest.py`
+sample) sends no `mode` at all. **Removed**, so the body is now exactly the
+documented set and an undeclared key cannot 422 the first real call. A test pins
+`set(body) == {prompt, width, height, samples, steps, cfg_scale, seed}` and that
+neither `image` nor `mode` is present.
+
+The docstring also claimed the endpoint accepts "**only** 1024 / 1024 / 1". That
+is wrong: the documented grid is 512–1568 in steps of 16 with
+`width * height <= 1_062_400`, and only `samples` is pinned to 1. The adapter
+still declares the single 1024×1024 square it actually sends (inside the range,
+under the cap), but the comment now says that instead of asserting a vendor
+limit that does not exist — a false constraint in a docstring is how the next
+person "fixes" a working call.
+
+### `cli providers` — what the environment will actually do, for free
+
+You asked for four specific surfaces; the honest state was "wired, but never
+called, and there is no key in this working copy". Reading that off `.env` by eye
+is how a stack looks configured while `AGENT_WEB_PROVIDER` still says `fixture`.
+
+```
+$ python -m pigamagic_agent.agent.cli providers
+surface  provider    model                           credential            key          note
+llm      groq        openai/gpt-oss-120b             AGENT_LLM_API_KEY     MISSING      needs a key; calls raise ProviderNotConfigured…
+vision   nemotron    nvidia/nemotron-nano-12b-v2-vl  AGENT_VISION_API_KEY  MISSING      …
+image    nvidia      flux-3-image-klein              AGENT_IMAGE_API_KEY   MISSING      text-to-image only: references are dropped and likeness is not kept
+web      duckduckgo  -                               AGENT_WEB_API_KEY     none needed  keyless; rate-limits datacenter IPs
+
+llm: groq cannot run — set AGENT_LLM_API_KEY or AGENT_GROQ_API_KEY.      EXIT=3
+```
+
+- `describe_active_stack(settings)` in `registry.py` **builds each provider** and
+  reports its resolved `name` and `model`, so the answer comes from the same
+  factory the pipeline uses rather than from a second table that can drift.
+- Exit **3** when a selected surface cannot run, 0 when all can, and `--json` for
+  a script. Naming the missing variable is the point: the pipeline *degrades* on a
+  missing key, so the failure is a warning in a log, not a crash.
+- It prints **no secret values** — only `key_present: true/false` and the names of
+  the variables consulted. A diagnostic is the last place a key should leak, and
+  a test asserts the value never appears in stdout or stderr.
+- DuckDuckGo reports `none needed`, because keyless is not a fault; the
+  image row repeats the separation-of-duties warning, because an operator
+  choosing `nvidia` should learn what it cannot do *before* the shoot.
+
+### Gates proven non-vacuous
+
+| injected regression | fails |
+| --- | --- |
+| slug reverted to `flux.3-image-klein` | `test_nvidia_defaults_match_the_documented_endpoint`, `test_nvidia_always_sends_the_documented_payload`, `test_the_requested_stack_is_reported_without_a_key_but_fails_loudly` |
+| `usable` hard-coded to `True` | `test_the_effective_stack_reports_a_missing_key_without_leaking_one`, both CLI exit-code tests |
+
+### Still not verified, and unchanged by this work
+
+The four adapters have **never been called with a real key** — there is none in
+this working copy. What changed is that the one thing a mock cannot check (the
+model slug and the request shape) now matches the vendor's published reference,
+and the remaining unknowns are down to two: whether Groq accepts
+`response_format: json_schema` with `strict: true` on `gpt-oss-120b`, and whether
+the hosted Nemotron NIM accepts a base64 `image_url` data URI for a real
+reference face.
+
+```bash
+cd backend && python -m pytest -q                                  # 971 passed
+cd backend && python -m pigamagic_agent.agent.cli providers        # exit 0 on fixtures
+cd backend && python -m pigamagic_agent.agent.cli eval             # exit 0, 13 briefs
+cd ../pigamagic/backend && ../venv/Scripts/python -m pytest -q     # 32 passed
+cd ../pigamagic/backend && ./sync_agent.sh --check                 # exit 0
+```
+
+---
+
 ## If a session breaks here — read this before touching anything
 
-**Status at last check:** `cd backend && python -m pytest` → **963 passed**, 1 warning, ~107 s. Tree has **uncommitted** work (see below). Nothing is broken right now; this section exists so a resume does not re-diagnose a dead end.
+**Status at last check:** `cd backend && python -m pytest` → **971 passed**, 1 warning, ~2 min. Both repos are clean and committed; `sync_agent.sh --check` exits 0. This section exists so a resume does not re-diagnose a dead end.
 
 ### The failure that was in the tree (already fixed — do not re-litigate it)
 
@@ -1819,17 +1997,24 @@ Nothing in the code needs changing to satisfy "FLUX Klein via NVIDIA for images,
 
 | surface | setting | provider name | pinned default model | alias accepted |
 | --- | --- | --- | --- | --- |
-| image | `AGENT_IMAGE_PROVIDER` | `nvidia` | `flux.3-image-klein` | `nim`, `bfl`, `black-forest-labs` |
+| image | `AGENT_IMAGE_PROVIDER` | `nvidia` | `flux-3-image-klein` | `nim`, `bfl`, `black-forest-labs` |
 | vision | `AGENT_VISION_PROVIDER` | `nemotron` | `nvidia/nemotron-nano-12b-v2-vl` | `nvidia`, `nvidia-vl`, `nim` |
 | LLM | `AGENT_LLM_PROVIDER` | `groq` | `openai/gpt-oss-120b` | `gpt-oss`, `gptoss`, `oss` |
 | search | `AGENT_WEB_PROVIDER` | `duckduckgo` | keyless DuckDuckGo Lite | `ddg`, `duck-duck-go` |
 | search (paid) | `AGENT_WEB_PROVIDER=serper` | `serper` | Google JSON via Serper | `serper-dev` |
 
-**Why nothing has ever been called for real: this working copy has no keys.** Verified — `AGENT_LLM_API_KEY`, `AGENT_VISION_API_KEY`, `AGENT_IMAGE_API_KEY`, `AGENT_NVIDIA_API_KEY`, `AGENT_WEB_API_KEY` and `SERPER_API_KEY` are **all empty** in the repo-root `.env`, and every provider is still `fixture`. So the adapters are unit-tested against a mock transport only. Three specific unknowns remain:
+**Why nothing has ever been called for real: this working copy has no keys.** Verified — `AGENT_LLM_API_KEY`, `AGENT_VISION_API_KEY`, `AGENT_IMAGE_API_KEY`, `AGENT_NVIDIA_API_KEY`, `AGENT_WEB_API_KEY` and `SERPER_API_KEY` are **all empty** in the repo-root `.env`, and every provider is still `fixture`. So the adapters are unit-tested against a mock transport only. Two specific unknowns remain:
 
 1. whether Groq accepts `response_format: json_schema` with `strict: true` on `gpt-oss-120b` (there is a `json_object` fallback on HTTP 400, but it has never been exercised);
-2. whether the **hosted** NVIDIA NIM accepts a base64 `image_url` data URI for a real reference face;
-3. whether the hosted NVIDIA image NIM accepts anything but its preset `example_id` images — `NvidiaImageProvider` currently declares `supports_identity_refs=False` on hosted and `True` (8 refs) only when `AGENT_NVIDIA_NIM_SELF_HOSTED=true`.
+2. whether the **hosted** NVIDIA NIM accepts a base64 `image_url` data URI for a real reference face.
+
+The third unknown from the previous session — "does the hosted NVIDIA image NIM accept anything but preset `example_id` images?" — is **answered from the published API reference**: `image` is *optional* and, when supplied, restricted to `data:image/png;example_id,{0..3}`. So text-to-image with no `image` key is a documented mode, which is exactly what the adapter sends; `supports_identity_refs=False` stays correct. That reading also produced the real fix of the next session: the model slug was `flux.3-image-klein` (dots) where the endpoint is `flux-3-image-klein` (hyphens), a guaranteed 404 that every mock-based test was happy with.
+
+Check the effective stack in one offline command, which also names any credential still missing:
+
+```bash
+cd backend && python -m pigamagic_agent.agent.cli providers    # exit 3 while a key is missing
+```
 
 Before trusting a real provider, also remember: `AGENT_IMAGE_BUDGET_USD=0` means **unlimited**, not blocked (`BudgetLedger.check()` returns early when `limit_usd <= 0`). Set a real number first.
 
@@ -1843,9 +2028,8 @@ Before trusting a real provider, also remember: `AGENT_IMAGE_BUDGET_USD=0` means
 
 ### Next actions, in order
 
-1. Commit the in-flight `research.py` + test change (it is green and self-contained).
-2. Drop a real key into `.env`, set `AGENT_IMAGE_BUDGET_USD=1.00`, then run one shoot end to end and answer the three unknowns above.
-3. Then the product-shell list still stands, unchanged: SSE, lineage endpoints (`siblings_of`/`lineage_tree`/`compare` already tested in `lineage.py`), and one shared flag store (agent `FlagRegistry` is in-memory, shell has `GeneratedPhoto.safety_flagged`).
+1. Drop a real key into `.env` (Groq + NVIDIA, and a Serper key if you want paid search), set `AGENT_IMAGE_BUDGET_USD=1.00`, run `cli providers` until it exits 0, then run one shoot end to end and answer the two unknowns above.
+2. Then the product-shell list still stands, unchanged: SSE, lineage endpoints (`siblings_of`/`lineage_tree`/`compare` already tested in `lineage.py`), and one shared flag store (agent `FlagRegistry` is in-memory, shell has `GeneratedPhoto.safety_flagged`).
 
 ---
 
@@ -1854,7 +2038,8 @@ Before trusting a real provider, also remember: `AGENT_IMAGE_BUDGET_USD=0` means
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q                                  # expect 963 passed
+cd backend && python -m pytest -q                                  # expect 971 passed
+cd backend && python -m pigamagic_agent.agent.cli providers        # exit 0 = every selected surface can run
 cd backend && python -m pigamagic_agent.agent.cli eval             # exit 0 = eval gate
 cd backend && python -m pigamagic_agent.agent.cli research \
     --venue "Sarova Stanley, Nairobi" --provider duckduckgo --quiet # exit 0 = real search works
@@ -1863,13 +2048,15 @@ cd ../pigamagic/backend && ./sync_agent.sh --check                 # vendored co
 cd ../pigamagic/backend && git log --oneline -3                    # latest shell work
 ```
 
-State to trust: **Steps 0.1–15, 15b and 17–20 are complete and green (963
+State to trust: **Steps 0.1–15, 15b and 17–20 are complete and green (971
 tests), and the agent is vendored into the product shell at
 `pigamagic/backend/app/pigamagic_agent` generating real photos through the real
 credit ledger (32 shell tests), with comment -> edit working through three
 chained generations.** Every surface now has a real adapter selected by
-`AGENT_*_PROVIDER` (Groq planner, Nemotron VL vision, NVIDIA FLUX image,
+`AGENT_*_PROVIDER` (Groq planner, Nemotron VL vision, NVIDIA FLUX Klein image,
 DuckDuckGo/Serper search); the fixtures stay the default so CI remains offline.
+`cli providers` reports what the current environment selects and names any key
+that is still missing, without calling anything or printing a secret.
 
 Step order note: 14 → 17 → 18 → 19 → 20 → 15 was intentional; 15 was finished
 last because the earlier plan assumed it needed a paid search key. It does not:
@@ -1885,10 +2072,13 @@ code change -- `app/api/photos.py` builds them from the registry, so setting
 `AGENT_IMAGE_PROVIDER=nvidia` and `AGENT_WEB_PROVIDER=duckduckgo` in its
 `backend/.env` (see its `.env.example`) is the whole switch.
 
-First thing to do with a real key: run one shoot end to end and confirm Groq
-accepts the `json_schema` response format and that the hosted Nemotron NIM takes
-a base64 reference image. Both are unit-tested against a mock transport but have
-never been called for real -- no key exists in this working copy.
+First thing to do with a real key: run `cli providers` (it should print exit 0
+with every row `set`), then one shoot end to end, and confirm Groq accepts the
+`json_schema` response format and that the hosted Nemotron NIM takes a base64
+reference image. Both are unit-tested against a mock transport but have never
+been called for real -- no key exists in this working copy. The NVIDIA image slug
+used to be a typo (`flux.3-` instead of `flux-3-image-klein`) and now matches the
+published endpoint, which is the one part of that path a mock could not check.
 
 Outstanding items for you:
 1. **Rotate the NVIDIA API key** that sat in the working-copy `.env.example`

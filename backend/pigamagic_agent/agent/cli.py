@@ -335,6 +335,59 @@ def _print_research(outcome, *, provider: str) -> None:
         print(f"warning: {warning}", file=sys.stderr)
 
 
+def cmd_providers(args: argparse.Namespace) -> int:
+    """Print the effective provider for every surface, without spending a call.
+
+    Exit 0 when every selected provider could actually run, 3 when one of them
+    is missing the credential it needs (the pipeline would degrade with a
+    warning instead of failing, which is easy to miss).
+    """
+    from pigamagic_agent.agent.providers.registry import describe_active_stack  # noqa: PLC0415
+
+    rows = describe_active_stack(get_settings())
+    blocked = [row for row in rows if not row["usable"]]
+
+    if args.json:
+        print(json.dumps({"stack": rows, "usable": not blocked}, indent=2))
+        return 3 if blocked else 0
+
+    headers = ("surface", "provider", "model", "credential", "key", "note")
+    table = []
+    for row in rows:
+        key = row["key_envs"][0] if row["key_envs"] else "-"
+        state = "set" if row["key_present"] else ("" if row["usable"] else "MISSING")
+        if row["usable"] and not row["key_present"]:
+            state = "none needed"
+        table.append(
+            (
+                row["surface"],
+                row["provider"],
+                row["model"] or "-",
+                key,
+                state or "-",
+                row["note"],
+            )
+        )
+
+    widths = [max(len(headers[i]), *(len(line[i]) for line in table)) for i in range(5)]
+    for index, header in enumerate(headers[:5]):
+        print(header.ljust(widths[index]), end="  ")
+    print("note")
+    for line in table:
+        for index, cell in enumerate(line[:5]):
+            print(cell.ljust(widths[index]), end="  ")
+        print(line[5])
+
+    sys.stdout.flush()
+    for row in blocked:
+        print(
+            f"\n{row['surface']}: {row['provider']} cannot run — set "
+            f"{' or '.join(row['key_envs'])}.",
+            file=sys.stderr,
+        )
+    return 3 if blocked else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m pigamagic_agent.agent.cli",
@@ -410,6 +463,12 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("--out", help="write the profile JSON to this path")
     research.add_argument("--quiet", action="store_true", help="suppress the summary")
     research.set_defaults(func=cmd_research)
+
+    providers = sub.add_parser(
+        "providers", help="show which provider each surface will use (no network)"
+    )
+    providers.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    providers.set_defaults(func=cmd_providers)
     return parser
 
 

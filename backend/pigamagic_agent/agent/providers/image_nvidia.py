@@ -7,23 +7,33 @@ Black Forest Labs model is available only through NVIDIA.
 Endpoint shape: `POST {base}/{model}` with a bearer key, JSON body, and a
 response whose image lives at `artifacts[0].base64`.
 
+**This adapter is text-to-image only. It never uploads an image.** No reference
+photo, no structural reference, no `mode: "Image Editing"`. References are the
+vision model's job (`providers/vision_nvidia.py` analyses them and their
+observations reach this endpoint as prompt text); the hosted NIM accepts only
+`data:image/png;example_id,N` preset images anyway, so an upload would either be
+rejected or condition on a stranger's face. Identity refs are therefore dropped
+by `render_plan` with a warning rather than sent here.
+
+**The request body is exactly the documented parameter set** for
+`black-forest-labs/flux-3-image-klein` (NVIDIA API reference, verified 2026):
+`prompt`, `width`, `height`, `samples`, `steps`, `cfg_scale`, `seed`. Nothing
+else is sent — in particular no `image` and no `mode`, because the documented
+route is text-to-image when no image is supplied, and an undeclared key is a
+needless 422 risk on the first real call.
+
 **Constraints that differ from every other adapter**, all enforced here:
 
 - `prompt` is capped at 2000 characters for flux-3-image-klein. Our assembled
   prompts are ~1150 chars, so this is not theoretical: it will bite on a busy
-  plan. The cap is applied in `_fit_prompt`, which trims the *reference* portion
+  plan. The cap is applied in `fit_prompt`, which trims the *reference* portion
   first and never drops the subject or action.
-- `width`, `height` and `samples` accept **only** 1024 / 1024 / 1 on the hosted
-  endpoint, so we do not send caller sizes.
-- `steps` <= 50, `cfg_scale` <= 20.
-
-**Identity references.** The hosted preview API only accepts
-`data:image/png;example_id,N` (a fixed example image), not uploaded bytes. A
-self-hosted NIM accepts up to 8 real images per request. Rather than silently
-pretending likeness works, this adapter declares `supports_identity_refs=False`
-for the hosted endpoint and `True` when `NVIDIA_NIM_SELF_HOSTED` is set. The
-pipeline therefore knows a hosted NV runtime *cannot* guarantee a real person's
-face — which matters, because our whole premise is "a photo of you".
+- `samples` accepts only `1`.
+- `steps` <= 50, `cfg_scale` <= 20 (and must be > 1).
+- `width`/`height` are documented as 512..1568 in steps of 16 with
+  `width * height <= 1_062_400`. A shoot renders 1024x1024, which is inside the
+  range and under the cap, so this adapter declares the single square size it
+  actually sends rather than advertising a grid a plan never asks for.
 """
 
 from __future__ import annotations
@@ -36,9 +46,11 @@ from pigamagic_agent.agent.providers.image_base import BaseImageProvider, ImageC
 
 NVIDIA_BASE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs"
 
-# Hosted model slug. Other usable ones: flux.1-dev, flux.1-schnell,
+# Hosted model slug — the endpoint is
+# POST .../genai/black-forest-labs/flux-3-image-klein (hyphens, not dots; the
+# dotted form 404s). Other usable slugs: flux.1-dev, flux.1-schnell,
 # flux.2-klein-4b. Override with AGENT_IMAGE_MODEL.
-DEFAULT_MODEL = "flux.3-image-klein"
+DEFAULT_MODEL = "flux-3-image-klein"
 
 DEFAULT_STEPS = 50
 DEFAULT_CFG_SCALE = 3.5
@@ -48,25 +60,23 @@ MAX_PROMPT_CHARS = 2000
 MAX_STEPS = 50
 MAX_CFG_SCALE = 20.0
 
-# Hosted NIM only accepts 1024x1024 with samples=1.
+# A shoot renders 1024x1024, which is within the documented 512..1568 /
+# step-16 grid and under the 1,062,400-pixel cap. samples=1 is all the hosted
+# route allows, so one square is the whole declaration.
 _HOSTED_SIZES: tuple[tuple[int, int], ...] = ((1024, 1024),)
-_SELF_HOSTED_SIZES: tuple[tuple[int, int], ...] = (
-    (1024, 1024),
-    (1344, 768),
-    (768, 1344),
-    (1184, 888),
-    (888, 1184),
-    (1248, 832),
-    (832, 1248),
-)
 
 
 class NvidiaImageProvider(BaseImageProvider):
-    """BFL FLUX generation through NVIDIA NIM (hosted or self-hosted)."""
+    """BFL FLUX generation through NVIDIA NIM.
 
-    name: str = "nvidia"
+    Deliberately text-to-image: `supports_identity_refs` and
+    `supports_structural_ref` are both False, whatever `NVIDIA_NIM_SELF_HOSTED`
+    says, so no request from this adapter can carry image bytes.
+    """
+
+    name = "nvidia"
     capabilities = ImageCapabilities(
-        supports_identity_refs=False,  # hosted preview: example images only
+        supports_identity_refs=False,
         max_identity_refs=0,
         supports_negative_prompt=False,  # no negative field; folded into prompt
         supports_seed=True,
@@ -81,17 +91,10 @@ class NvidiaImageProvider(BaseImageProvider):
             self.base_url = NVIDIA_BASE_URL
         if not self.model:
             self.model = DEFAULT_MODEL
-        # A self-hosted NIM accepts real reference images; the hosted preview
-        # does not. Reflect that in the declared capabilities.
+        # A self-hosted NIM is a different *host*, not a different capability:
+        # this adapter still sends no images, so the declared capabilities and
+        # the request shape cannot disagree.
         if getattr(self.settings, "nvidia_nim_self_hosted", False):
-            self.capabilities = ImageCapabilities(
-                supports_identity_refs=True,
-                max_identity_refs=8,  # documented for flux-3-image-klein NIM
-                supports_negative_prompt=False,
-                supports_seed=True,
-                supports_structural_ref=True,
-                supported_sizes=_SELF_HOSTED_SIZES,
-            )
             self.base_url = getattr(self.settings, "nvidia_image_base_url", "") or self.base_url
 
     # -- prompt fitting --------------------------------------------------
@@ -165,18 +168,11 @@ class NvidiaImageProvider(BaseImageProvider):
             "cfg_scale": cfg_scale,
             # Seed 0 means "random" to NIM, so only send a real seed.
             "seed": int(seed) if seed else 0,
+            # No `image` key and no `mode` key: the documented request is
+            # text-to-image when no image is supplied, and this adapter must
+            # never upload a reference. Identity is the vision model's output
+            # expressed as prompt text, so there is nothing to condition on.
         }
-
-        # Editing mode requires a reference image. Only attempt it when we
-        # actually have one AND the endpoint can accept arbitrary images.
-        if structural_ref is not None and self.capabilities.supports_structural_ref:
-            from pigamagic_agent.agent.providers.http_base import encode_b64
-
-            payload["mode"] = "Image Editing"
-            payload["image"] = f"data:image/png;base64,{encode_b64(structural_ref)}"
-        else:
-            payload["mode"] = "Image Generation"
-            payload["image"] = None
 
         response = await self.request_json(
             "POST",

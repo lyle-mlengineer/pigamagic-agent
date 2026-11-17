@@ -647,7 +647,7 @@ def test_nvidia_defaults_match_the_documented_endpoint() -> None:
     from pigamagic_agent.agent.providers.image_nvidia import DEFAULT_MODEL, NVIDIA_BASE_URL
 
     provider = _nvidia()
-    assert provider.model == DEFAULT_MODEL == "flux.3-image-klein"
+    assert provider.model == DEFAULT_MODEL == "flux-3-image-klein"
     assert provider.base_url == NVIDIA_BASE_URL
 
 
@@ -658,9 +658,11 @@ def test_nvidia_honestly_declares_no_identity_refs_when_hosted() -> None:
 
 
 def test_nvidia_self_hosted_enables_identity_refs() -> None:
+    """Self-hosted moves the host only; this adapter still uploads nothing."""
     provider = _nvidia(nvidia_nim_self_hosted=True)
-    assert provider.capabilities.supports_identity_refs is True
-    assert provider.capabilities.max_identity_refs == 8
+    assert provider.capabilities.supports_identity_refs is False
+    assert provider.capabilities.max_identity_refs == 0
+    assert provider.capabilities.supports_structural_ref is False
 
 
 def test_nvidia_refuses_identity_refs_it_cannot_honour() -> None:
@@ -719,12 +721,17 @@ def test_nvidia_always_sends_the_documented_payload() -> None:
     image = asyncio.run(provider.generate(prompt="a wedding portrait", width=1024, height=1024))
 
     body = captured["body"]
-    assert captured["url"].endswith("/flux.3-image-klein")
-    assert body["mode"] == "Image Generation"
+    # The published route is POST .../black-forest-labs/flux-3-image-klein.
+    assert captured["url"].endswith("/flux-3-image-klein")
+    assert "flux.3-image-klein" not in captured["url"]
     assert body["width"] == 1024 and body["height"] == 1024
     assert body["samples"] == 1
     assert 1 <= body["steps"] <= 50
-    assert body["image"] is None
+    # Exactly the documented parameter set: an undeclared key is a 422 risk.
+    assert set(body) == {"prompt", "width", "height", "samples", "steps", "cfg_scale", "seed"}
+    # No image is uploaded, in any field: this adapter is text-to-image only.
+    assert "image" not in body
+    assert "mode" not in body
     assert image.content.startswith(b"\x89PNG")
     assert image.metadata["endpoint"] == "genai"
 
@@ -788,7 +795,8 @@ def test_nvidia_seed_zero_is_sent_as_random() -> None:
     assert captured["body"]["seed"] == 0
 
 
-def test_nvidia_self_hosted_enables_editing_mode() -> None:
+def test_nvidia_never_uploads_a_structural_ref() -> None:
+    """Even self-hosted, an edit must not become an uploaded image."""
     provider = _nvidia(nvidia_nim_self_hosted=True)
     captured: dict[str, Any] = {}
 
@@ -799,8 +807,10 @@ def test_nvidia_self_hosted_enables_editing_mode() -> None:
     provider.request_json = fake_request  # type: ignore[method-assign]
     asyncio.run(provider.generate(prompt="x", structural_ref=_png()))
 
-    assert captured["body"]["mode"] == "Image Editing"
-    assert captured["body"]["image"].startswith("data:image/png;base64,")
+    body = captured["body"]
+    assert "image" not in body
+    assert "mode" not in body
+    assert set(body) <= {"prompt", "width", "height", "samples", "steps", "cfg_scale", "seed"}
 
 
 def test_nvidia_judges_real_plan_prompts_against_the_limit() -> None:
