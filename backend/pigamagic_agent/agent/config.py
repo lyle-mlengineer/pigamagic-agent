@@ -124,7 +124,7 @@ class AgentSettings(BaseSettings):
     # Blank = the adapter's pinned current default:
     #   groq      -> openai/gpt-oss-120b        (planner, free tier)
     #   nemotron  -> nvidia/nemotron-nano-12b-v2-vl  (vision, free tier)
-    #   nvidia    -> flux.3-image-klein        (image, via NVIDIA NIM)
+    #   nvidia    -> flux-3-image-klein        (image, via NVIDIA NIM; hyphens)
     llm_model: str = ""
     vision_model: str = ""
     image_model: str = ""
