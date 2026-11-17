@@ -52,7 +52,7 @@ from pigamagic_agent.agent.providers.web_common import (
 )
 from pigamagic_agent.agent.providers.web_searxng import SearxngWebProvider
 from pigamagic_agent.agent.providers.web_wikipedia import WikipediaWebProvider
-from pigamagic_agent.agent.research import rank_hits, research_venue
+from pigamagic_agent.agent.research import extract_details, rank_hits, research_venue
 from pigamagic_agent.agent.providers.vision_fixture import FixtureVisionProvider
 
 PNG = render_fixture_png(prompt="venue", width=32, height=32)
@@ -841,3 +841,50 @@ def test_cli_research_refuses_offline() -> None:
     )
     assert result.returncode == 2
     assert "offline" in result.stderr.casefold()
+
+
+# --------------------------------------------------------------------------
+# Page chrome must not become evidence
+# --------------------------------------------------------------------------
+
+def test_a_repeated_anchor_is_kept_once() -> None:
+    # Real hotel pages repeat a blurb in the card and again in the panel it
+    # opens, prefixed with a UI label. Two identical anchors eat one of six
+    # slots and make the evidence look richer than it is.
+    page = (
+        "MORE DETAILS Meetings & Events Meetings & Events From high-tech private rooms "
+        "to a grand ballroom, we have the ideal venue for any event."
+    )
+
+    details = extract_details([page])
+
+    assert len(details) == 1
+    assert details[0].startswith("Meetings & Events From high-tech")
+    assert "MORE DETAILS" not in details[0]
+
+
+def test_near_identical_anchors_collapse() -> None:
+    page_a = "The hotel offers a rooftop pool and a modern health club for guests."
+    page_b = "The hotel offers a rooftop pool and a modern health club for guests!"
+
+    details = extract_details([page_a, page_b])
+
+    assert len(details) == 1
+
+
+def test_distinct_anchors_all_survive() -> None:
+    page = (
+        "The colonial-era atrium has a glass ceiling over the lounge. "
+        "A long reflecting pool runs the length of the garden terrace. "
+        "The ballroom keeps its original parquet floor and arched windows."
+    )
+
+    details = extract_details([page])
+
+    assert len(details) == 3
+
+
+def test_a_label_without_repetition_is_still_stripped() -> None:
+    details = extract_details(["Read more The hotel has a rooftop pool and a spa."])
+
+    assert details and details[0].startswith("The hotel has a rooftop pool")

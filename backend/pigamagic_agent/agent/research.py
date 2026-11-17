@@ -317,10 +317,10 @@ def extract_details(pages: Sequence[str]) -> list[str]:
     citation furniture.
     """
     details: list[str] = []
-    seen: set[str] = set()
+    seen: list[str] = []
     for page in pages:
         for sentence in _SENTENCE_SPLIT.split(page):
-            candidate = " ".join(sentence.split())
+            candidate = _clean_detail(sentence)
             if not 25 <= len(candidate) <= 220:
                 continue
             lowered = candidate.casefold()
@@ -328,14 +328,56 @@ def extract_details(pages: Sequence[str]) -> list[str]:
                 continue
             if any(marker in lowered for marker in _BOILERPLATE_MARKERS):
                 continue
-            key = lowered[:60]
-            if key in seen:
+            key = _detail_key(candidate)
+            # Real pages repeat themselves: a menu label is echoed by the panel
+            # it opens, and a blurb appears in both the card and the footer. Two
+            # anchors that say the same thing waste one of six slots and make the
+            # planner look like it has more evidence than it does.
+            if any(key == other or key in other or other in key for other in seen):
                 continue
-            seen.add(key)
+            seen.append(key)
             details.append(candidate)
             if len(details) >= 6:
                 return details
     return details
+
+
+# UI labels that precede real content in extracted page text. They are chrome,
+# not architecture, and they make otherwise identical anchors look different.
+_DETAIL_LABELS: tuple[str, ...] = (
+    "more details",
+    "read more",
+    "learn more",
+    "view more",
+    "see more",
+    "book now",
+    "skip to content",
+)
+
+# A label that immediately repeats itself is one phrase plus the panel it
+# opens: "Meetings & Events Meetings & Events From high-tech rooms...".
+_DOUBLED_PHRASE = re.compile(r"^(.{5,60}?)\s+\1(?![\w])", re.IGNORECASE)
+
+
+def _clean_detail(sentence: str) -> str:
+    """Strip page chrome from one candidate anchor."""
+    candidate = " ".join(sentence.split())
+    changed = True
+    while changed:
+        changed = False
+        for label in _DETAIL_LABELS:
+            if candidate.casefold().startswith(label + " "):
+                candidate = candidate[len(label) + 1 :].lstrip()
+                changed = True
+    doubled = _DOUBLED_PHRASE.match(candidate)
+    if doubled:
+        candidate = candidate[len(doubled.group(1)) :].lstrip()
+    return candidate
+
+
+def _detail_key(candidate: str) -> str:
+    """Alphanumeric-only form used to spot an anchor that says the same thing."""
+    return " ".join(re.findall(r"[a-z0-9]+", candidate.casefold()))
 
 
 def rank_hits(venue: str, hits: Sequence[SearchHit]) -> list[SearchHit]:

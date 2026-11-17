@@ -66,7 +66,8 @@
 | 20 safety console + purge paths | **DONE** | 25 tests; 824 total pass |
 | 11+ product shell / API | **PART DONE** | vendored + real generation wired; SSE/comment-edit still open |
 | provider switch | **DONE** | config-only (`AGENT_*_PROVIDER`); 3 sanity tests; 32 shell tests |
-| 15b real chat + vision + search adapters | **DONE** | Groq `gpt-oss-120b`, Nemotron VL, DuckDuckGo, Serper; 53 tests; 959 total pass |
+| 15b real chat + vision + search adapters | **DONE** | Groq `gpt-oss-120b`, Nemotron VL, DuckDuckGo, Serper; 53 tests; 963 total pass |
+| evidence quality (page chrome) | **DONE — UNCOMMITTED** | `extract_details` dedupe/label stripping; 4 tests; see the resume section at the bottom |
 
 ---
 
@@ -1776,12 +1777,84 @@ cd /d/git/potfolio/pigamagic/backend && ./sync_agent.sh --check
 
 ---
 
+## If a session breaks here — read this before touching anything
+
+**Status at last check:** `cd backend && python -m pytest` → **963 passed**, 1 warning, ~107 s. Tree has **uncommitted** work (see below). Nothing is broken right now; this section exists so a resume does not re-diagnose a dead end.
+
+### The failure that was in the tree (already fixed — do not re-litigate it)
+
+Symptom, exactly as it appeared:
+
+```
+$ cd backend && python -m pytest -q
+FAILED tests/agent/test_web_providers.py::test_a_repeated_anchor_is_kept_once
+FAILED tests/agent/test_web_providers.py::test_near_identical_anchors_collapse
+FAILED tests/agent/test_web_providers.py::test_distinct_anchors_all_survive
+FAILED tests/agent/test_web_providers.py::test_a_label_without_repetition_is_still_stripped
+E   NameError: name 'extract_details' is not defined
+tests\agent\test_web_providers.py:888
+```
+
+**Root cause:** the four new tests call `extract_details()`, but the test module's import line still read `from pigamagic_agent.agent.research import rank_hits, research_venue`. A test-module import gap, **not** a product bug — `research.py` already exported the function and it worked. The `NameError` reads like a missing function, so the trap is going into `research.py` and "re-adding" what is already there.
+
+**Fixed by:** adding `extract_details` to that one import line. Also removed a duplicated three-line comment block above `_DOUBLED_PHRASE` in `research.py` (two variants of the same explanation had been pasted in).
+
+**Verify:** `cd backend && python -m pytest -q tests/agent/test_web_providers.py` → 83 passed; full suite → 963 passed.
+
+### What the uncommitted work is (commit it before doing anything else)
+
+| file | change |
+| --- | --- |
+| `backend/pigamagic_agent/agent/research.py` | `extract_details()` cleans page chrome (`MORE DETAILS`, `Read more`, …) and collapses near-identical anchors, so a repeated blurb does not eat one of the six `signature_details` slots |
+| `backend/tests/agent/test_web_providers.py` | 4 tests pinning that behaviour |
+| `pigamagic/backend/app/pigamagic_agent/agent/research.py` | the same fix, vendored — `./sync_agent.sh` was run and `--check` now exits 0 |
+
+Both suites were run after the fix, not assumed: agent **963 passed**, shell **32 passed**.
+
+The behaviour was found by running the real DuckDuckGo research path by hand and seeing the same hotel blurb twice in the anchors. It is a real evidence-quality fix, not cosmetic: duplicate anchors make the planner look better-sourced than it is.
+
+### The four providers the user asked for are already wired — configuration only
+
+Nothing in the code needs changing to satisfy "FLUX Klein via NVIDIA for images, Nemotron VL via NVIDIA for vision, `gpt-oss-120b` on Groq for the LLM, DuckDuckGo + Serper for search". It is all in `providers/registry.py` and driven by `AGENT_*_PROVIDER`:
+
+| surface | setting | provider name | pinned default model | alias accepted |
+| --- | --- | --- | --- | --- |
+| image | `AGENT_IMAGE_PROVIDER` | `nvidia` | `flux.3-image-klein` | `nim`, `bfl`, `black-forest-labs` |
+| vision | `AGENT_VISION_PROVIDER` | `nemotron` | `nvidia/nemotron-nano-12b-v2-vl` | `nvidia`, `nvidia-vl`, `nim` |
+| LLM | `AGENT_LLM_PROVIDER` | `groq` | `openai/gpt-oss-120b` | `gpt-oss`, `gptoss`, `oss` |
+| search | `AGENT_WEB_PROVIDER` | `duckduckgo` | keyless DuckDuckGo Lite | `ddg`, `duck-duck-go` |
+| search (paid) | `AGENT_WEB_PROVIDER=serper` | `serper` | Google JSON via Serper | `serper-dev` |
+
+**Why nothing has ever been called for real: this working copy has no keys.** Verified — `AGENT_LLM_API_KEY`, `AGENT_VISION_API_KEY`, `AGENT_IMAGE_API_KEY`, `AGENT_NVIDIA_API_KEY`, `AGENT_WEB_API_KEY` and `SERPER_API_KEY` are **all empty** in the repo-root `.env`, and every provider is still `fixture`. So the adapters are unit-tested against a mock transport only. Three specific unknowns remain:
+
+1. whether Groq accepts `response_format: json_schema` with `strict: true` on `gpt-oss-120b` (there is a `json_object` fallback on HTTP 400, but it has never been exercised);
+2. whether the **hosted** NVIDIA NIM accepts a base64 `image_url` data URI for a real reference face;
+3. whether the hosted NVIDIA image NIM accepts anything but its preset `example_id` images — `NvidiaImageProvider` currently declares `supports_identity_refs=False` on hosted and `True` (8 refs) only when `AGENT_NVIDIA_NIM_SELF_HOSTED=true`.
+
+Before trusting a real provider, also remember: `AGENT_IMAGE_BUDGET_USD=0` means **unlimited**, not blocked (`BudgetLedger.check()` returns early when `limit_usd <= 0`). Set a real number first.
+
+### Do not repeat these dead ends
+
+- **Do not "fix" `extract_details` again.** It works; the failure was the import line.
+- **Do not use a bash heredoc (`<<'PY'`) to write Python** containing escape sequences. This has corrupted string literals **three times** in this project. Use the edit/write tools.
+- **Do not run pytest from the repo root.** `pydantic`'s `env_file=".env"` resolves against the working directory, so the suite silently falls back to a relative `./var/media`, i.e. back onto C: (which has ~2 GB free). Always `cd backend`.
+- **Do not hand-edit the vendored copy** at `pigamagic/backend/app/pigamagic_agent`. `./sync_agent.sh` is the only contract; `--check` must exit 0.
+- **Do not claim the real providers work** without a key. Say "built and mock-tested, never called" — that is the honest status and the previous session recorded it the same way.
+
+### Next actions, in order
+
+1. Commit the in-flight `research.py` + test change (it is green and self-contained).
+2. Drop a real key into `.env`, set `AGENT_IMAGE_BUDGET_USD=1.00`, then run one shoot end to end and answer the three unknowns above.
+3. Then the product-shell list still stands, unchanged: SSE, lineage endpoints (`siblings_of`/`lineage_tree`/`compare` already tested in `lineage.py`), and one shared flag store (agent `FlagRegistry` is in-memory, shell has `GeneratedPhoto.safety_flagged`).
+
+---
+
 ## Resuming after a disconnect
 
 Read this file top to bottom, then:
 
 ```bash
-cd backend && python -m pytest -q                                  # expect 959 passed
+cd backend && python -m pytest -q                                  # expect 963 passed
 cd backend && python -m pigamagic_agent.agent.cli eval             # exit 0 = eval gate
 cd backend && python -m pigamagic_agent.agent.cli research \
     --venue "Sarova Stanley, Nairobi" --provider duckduckgo --quiet # exit 0 = real search works
@@ -1790,7 +1863,7 @@ cd ../pigamagic/backend && ./sync_agent.sh --check                 # vendored co
 cd ../pigamagic/backend && git log --oneline -3                    # latest shell work
 ```
 
-State to trust: **Steps 0.1–15, 15b and 17–20 are complete and green (959
+State to trust: **Steps 0.1–15, 15b and 17–20 are complete and green (963
 tests), and the agent is vendored into the product shell at
 `pigamagic/backend/app/pigamagic_agent` generating real photos through the real
 credit ledger (32 shell tests), with comment -> edit working through three
