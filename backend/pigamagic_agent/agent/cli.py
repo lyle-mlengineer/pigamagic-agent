@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from pigamagic_agent.agent.config import get_settings
-from pigamagic_agent.agent.conventions import get_pack
+from pigamagic_agent.agent.conventions import resolve_event
 from pigamagic_agent.agent.pipeline import ShootArtifact, list_briefs, load_brief, run_pipeline
 from pigamagic_agent.agent.profiles import (
     CastEntry,
@@ -70,7 +70,7 @@ def demo_cast(event: str) -> list[CastEntry]:
 
 
 def _demo_venue(brief) -> VenueProfile:
-    pack = get_pack(brief.event)
+    pack = resolve_event(brief.event).pack
     return VenueProfile(
         venue_key=f"{brief.venue_name.casefold()}|{brief.event}",
         name=brief.venue_name,
@@ -266,7 +266,7 @@ def cmd_research(args: argparse.Namespace) -> int:
                 args.venue,
                 args.event,
                 web=web,
-                pack=get_pack(args.event),
+                pack=resolve_event(args.event).pack,
                 settings=settings,
             )
         )

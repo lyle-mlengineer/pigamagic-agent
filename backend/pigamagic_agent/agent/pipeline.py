@@ -28,7 +28,7 @@ from pigamagic_agent.agent import PROMPT_VERSION
 from pigamagic_agent.agent.analyze import AnalysisOutcome, ReferenceImage, analyze_references
 from pigamagic_agent.agent.compile import CompileResult, ShootBrief, compile_plan
 from pigamagic_agent.agent.config import AgentSettings, get_settings
-from pigamagic_agent.agent.conventions import ConventionPack, get_pack
+from pigamagic_agent.agent.conventions import ConventionPack, resolve_event
 from pigamagic_agent.agent.hashing import canonical_json, sha256_bytes
 from pigamagic_agent.agent.plan import ShootPlan
 from pigamagic_agent.agent.profiles import VenueProfile
@@ -181,9 +181,20 @@ async def run_pipeline(
     cast comes from the vision pass and the venue from web research.
     """
     active = settings or get_settings()
-    conventions = pack or get_pack(brief.event)
-
     warnings: list[str] = []
+
+    # `brief.event` is whatever a host or a person typed — "Birthday", "my 40th",
+    # "Njeri's wedding" — not necessarily a pack key. `get_pack` is exact-key by
+    # design, so calling it here made a free-text event kill the whole shoot with
+    # `KeyError: no convention pack for 'Birthday'`. `resolve_event` is the
+    # entry point that matches aliases and degrades to `generic` with a warning,
+    # which is what every host needs.
+    if pack is not None:
+        conventions = pack
+    else:
+        resolution = resolve_event(brief.event)
+        conventions = resolution.pack
+        warnings.extend(resolution.warnings)
 
     # --- analyse references ------------------------------------------------
     if cast_override is not None:

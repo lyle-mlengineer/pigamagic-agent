@@ -267,3 +267,64 @@ def test_cli_output_is_identical_across_two_runs() -> None:
         return result.stdout
 
     assert run() == run()
+
+
+# --------------------------------------------------------------------------
+# The event is a label, not necessarily a pack key
+# --------------------------------------------------------------------------
+
+
+def _run_with_event(event: str):
+    """Run the pipeline for the birthday brief under a different event label."""
+    import dataclasses
+
+    from pigamagic_agent.agent.cli import _demo_venue, demo_cast
+
+    brief = dataclasses.replace(load_brief("birthday"), event=event)
+
+    async def go():
+        return await run_pipeline(
+            brief,
+            llm=FixtureLLMProvider(),
+            vision=FixtureVisionProvider(),
+            web=FixtureWebProvider(),
+            settings=_settings(),
+            cast_override=demo_cast(brief.event),
+            venue_override=_demo_venue(brief),
+        )
+
+    return asyncio.run(go())
+
+
+def test_a_prettified_event_does_not_fail_the_run() -> None:
+    """`\"Birthday\"` must resolve, not raise `KeyError: no convention pack`.
+
+    Hosts send whatever the person typed or picked: the product shell's
+    create-photoshoot form submits `\"Birthday\"` from a starter prompt. The
+    pipeline called `get_pack(brief.event)` — exact-key by design — so one capital
+    letter killed the whole shoot with `no convention pack for 'Birthday'`.
+    """
+    artifact = _run_with_event("Birthday")
+
+    assert artifact.plan.shots
+    assert not any("convention pack matched" in warning for warning in artifact.warnings)
+
+
+def test_a_prettified_event_uses_the_same_conventions_as_the_key() -> None:
+    """Resolution, not a fallback: `Birthday` and `birthday` must plan alike."""
+    keyed = _run_with_event("birthday")
+    prettified = _run_with_event("Birthday")
+
+    assert keyed.prompts.keys() == prettified.prompts.keys()
+    for node_id, prompt in keyed.prompts.items():
+        assert prettified.prompts[node_id].prompt == prompt.prompt
+
+
+def test_a_free_text_event_resolves_or_degrades_with_a_warning() -> None:
+    """Aliases resolve; genuinely unknown events get the generic pack, not a crash."""
+    free_text = _run_with_event("my mother's 60th birthday")
+    assert not any("convention pack matched" in warning for warning in free_text.warnings)
+
+    unknown = _run_with_event("underground cheese-rolling contest")
+    assert unknown.plan.shots
+    assert any("convention pack matched" in warning for warning in unknown.warnings)
