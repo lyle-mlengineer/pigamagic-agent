@@ -728,7 +728,10 @@ def test_nvidia_always_sends_the_documented_payload() -> None:
     assert body["samples"] == 1
     assert 1 <= body["steps"] <= 50
     # Exactly the documented parameter set: an undeclared key is a 422 risk.
-    assert set(body) == {"prompt", "width", "height", "samples", "steps", "cfg_scale", "seed"}
+    # `seed` used to be sent but the hosted endpoint rejects it with
+    # `422 extra_forbidden` (verified live), so it is deliberately absent.
+    assert set(body) == {"prompt", "width", "height", "samples", "steps", "cfg_scale"}
+    assert "seed" not in body
     # No image is uploaded, in any field: this adapter is text-to-image only.
     assert "image" not in body
     assert "mode" not in body
@@ -782,8 +785,11 @@ def test_nvidia_maps_401_to_a_clear_error() -> None:
         asyncio.run(_nvidia_with_no_key.generate(prompt="x"))
 
 
-def test_nvidia_seed_zero_is_sent_as_random() -> None:
+def test_nvidia_honestly_declares_seeds_unhonoured() -> None:
+    """The hosted endpoint rejects `seed`, so supports_seed must be False and
+    `generate` must not pass a seed to the vendor."""
     provider = _nvidia()
+    assert provider.capabilities.supports_seed is False
     captured: dict[str, Any] = {}
 
     async def fake_request(method, url, **kwargs):
@@ -791,8 +797,76 @@ def test_nvidia_seed_zero_is_sent_as_random() -> None:
         return {"artifacts": [{"base64": encode_b64(_png())}]}
 
     provider.request_json = fake_request  # type: ignore[method-assign]
-    asyncio.run(provider.generate(prompt="x", seed=None))
-    assert captured["body"]["seed"] == 0
+    asyncio.run(provider.generate(prompt="x", seed=12345))
+    assert "seed" not in captured["body"]
+
+
+def test_nvidia_reports_moderation_refusals_contextually() -> None:
+    """A CONTENT_FILTERED finish reason is a moderation block, not a mystery
+    empty artifact; after the softening retry also refuses, it must surface as
+    ContentFilteredError with the reason attached."""
+    from pigamagic_agent.agent.providers.image_nvidia import (
+        ContentFilteredError,
+        FINISH_REASON_FILTERED,
+    )
+
+    provider = _nvidia()
+    calls: list[str] = []
+
+    async def fake_request(method, url, **kwargs):
+        calls.append(kwargs.get("json_body", {}).get("prompt", ""))
+        return {"artifacts": [{"finishReason": FINISH_REASON_FILTERED, "base64": ""}]}
+
+    provider.request_json = fake_request  # type: ignore[method-assign]
+    with pytest.raises(ContentFilteredError) as info:
+        asyncio.run(provider.generate(prompt="a sage floral dress"))
+    assert FINISH_REASON_FILTERED in str(info.value)
+    assert info.value.retryable is False
+
+
+def test_nvidia_softening_retry_recovers_a_false_positive() -> None:
+    """When the first attempt is refused but the softened prompt passes, the
+    shot must succeed and the metadata must say it was softened."""
+    from pigamagic_agent.agent.providers.image_nvidia import FINISH_REASON_FILTERED
+
+    provider = _nvidia()
+    calls: list[str] = []
+
+    async def fake_request(method, url, **kwargs):
+        text = kwargs.get("json_body", {}).get("prompt", "")
+        calls.append(text)
+        if len(calls) == 1:
+            return {"artifacts": [{"finishReason": FINISH_REASON_FILTERED, "base64": ""}]}
+        return {"artifacts": [{"base64": encode_b64(_png())}]}
+
+    provider.request_json = fake_request  # type: ignore[method-assign]
+    image = asyncio.run(provider.generate(prompt="a sage floral dress"))
+    assert len(calls) == 2
+    assert "sage" in calls[0]
+    assert "sage" not in calls[1]
+    assert "muted olive" in calls[1]
+    assert image.metadata["prompt_softened"] is True
+
+
+def test_nvidia_soften_prompt_only_changes_when_needed() -> None:
+    from pigamagic_agent.agent.providers.image_nvidia import soften_prompt
+    from pigamagic_agent.agent.prompts import REFERENCE_END, REFERENCE_START
+
+    clean = "[STYLE] editorial\n[SCENE] a garden."
+    assert soften_prompt(clean) == clean
+
+    flagged = (
+        "[STYLE] editorial\n"
+        "[SUBJECTS]\n- the bride: sage dress.\n"
+        f"{REFERENCE_START}\nmaterial only\n{REFERENCE_END}\n"
+        "[NEGATIVE] malformed hands.\n\nAvoid: malformed hands, watermarks."
+    )
+    softened = soften_prompt(flagged)
+    assert REFERENCE_START not in softened
+    assert "[NEGATIVE]" not in softened and "Avoid:" not in softened
+    assert "sage" not in softened
+    assert "muted olive" in softened
+    assert "the bride" in softened
 
 
 def test_nvidia_never_uploads_a_structural_ref() -> None:
