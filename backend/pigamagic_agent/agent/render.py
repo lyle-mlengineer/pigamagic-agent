@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from pigamagic_agent.agent.config import AgentSettings, get_settings
 from pigamagic_agent.agent.hashing import prompt_hash, sha256_bytes
@@ -219,6 +219,8 @@ async def render_plan(
     budget: BudgetLedger | None = None,
     node_ids: Sequence[str] | None = None,
     seed: int | None = None,
+    on_photo: Callable[[RenderedPhoto], None] | None = None,
+    on_failure: Callable[[dict[str, Any]], None] | None = None,
 ) -> RenderOutcome:
     """Render every shot in a plan to storage.
 
@@ -226,6 +228,11 @@ async def render_plan(
     edit/regenerate). `parent_id` records lineage when re-rendering one photo.
     `seed` overrides the deterministic per-shot seed. An edit passes its own
     `edit_seed`, so a take is reproducible without being a re-roll of the parent.
+
+    `on_photo` / `on_failure` are progress hooks for a caller that shows photos
+    while the run is still going (an SSE stream). They fire as each shot lands,
+    in plan order, and a hook that raises is swallowed: a broken notifier must
+    never turn a delivered photograph into a failed run.
     """
     active = settings or get_settings()
 
@@ -268,12 +275,12 @@ async def render_plan(
     for shot in shots:
         assembled = artifact.prompts.get(shot.node_id)
         if assembled is None:
-            failures.append(
-                {
-                    "node_id": shot.node_id,
-                    "reason": "no prompt assembled for this node",
-                }
-            )
+            failure = {
+                "node_id": shot.node_id,
+                "reason": "no prompt assembled for this node",
+            }
+            failures.append(failure)
+            _notify(on_failure, failure)
             continue
 
         try:
@@ -295,26 +302,27 @@ async def render_plan(
             warnings.append(
                 f"Stopped after {len(photos)} photo(s): {exc}"
             )
-            failures.append(
-                {
-                    "node_id": shot.node_id,
-                    "reason": "budget exceeded",
-                    "detail": str(exc),
-                }
-            )
+            failure = {
+                "node_id": shot.node_id,
+                "reason": "budget exceeded",
+                "detail": str(exc),
+            }
+            failures.append(failure)
+            _notify(on_failure, failure)
             break
         except (ProviderError, StorageError, AgentError) as exc:
-            failures.append(
-                {
-                    "node_id": shot.node_id,
-                    "reason": type(exc).__name__,
-                    "detail": str(exc),
-                }
-            )
+            failure = {
+                "node_id": shot.node_id,
+                "reason": type(exc).__name__,
+                "detail": str(exc),
+            }
+            failures.append(failure)
+            _notify(on_failure, failure)
             continue
 
         photos.append(photo)
         total = total + cost
+        _notify(on_photo, photo)
 
     finished = utc_now()
 
@@ -338,6 +346,20 @@ async def render_plan(
         # edit of the child builds on the first instead of discarding it.
         artifact=artifact,
     )
+
+
+def _notify(callback: Callable[[Any], None] | None, payload: Any) -> None:
+    """Fire a progress hook without letting it break the render.
+
+    Progress reporting is best-effort by design: a dropped SSE connection or a
+    host callback that raises must not cost the user a photo they paid for.
+    """
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception:  # noqa: BLE001 - a notifier must never fail a render
+        return
 
 
 async def _render_one(

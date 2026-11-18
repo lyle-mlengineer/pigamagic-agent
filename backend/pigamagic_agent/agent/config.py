@@ -129,6 +129,18 @@ class AgentSettings(BaseSettings):
     vision_model: str = ""
     image_model: str = ""
 
+    # --- Image generation parameters ----------------------------------------
+    # Diffusion steps for vendors that expose them (currently the NVIDIA NIM /
+    # FLUX adapter). Lower is faster and cheaper; higher resolves more detail
+    # at the cost of latency. 20 is the shipping default: it is comfortably
+    # below the hosted endpoint's documented ceiling of 50 and renders a
+    # portrait in roughly half the time of the old 50-step default.
+    image_steps: int = Field(default=20, ge=1, le=50)
+    # Classifier-free guidance scale for the same vendors. The NVIDIA NIM route
+    # documents 1 < cfg_scale <= 20; 3.5 is FLUX's usual balance of prompt
+    # adherence and natural light.
+    image_cfg_scale: float = Field(default=3.5, gt=0.0, le=20.0)
+
     # --- Prompt versioning (hash-relevant) ----------------------------------
     # Bumping this intentionally invalidates every cached generation.
     prompt_version: str = "v1"
@@ -253,6 +265,11 @@ class AgentSettings(BaseSettings):
             "llm_model": self.llm_model,
             "vision_model": self.vision_model,
             "image_model": self.image_model,
+            # Steps and guidance change the pixels, not just the process, so a
+            # cached photo rendered at a different step count must not be
+            # served as if it were the same image.
+            "image_steps": self.image_steps,
+            "image_cfg_scale": self.image_cfg_scale,
             "identity_similarity_floor": self.identity_similarity_floor,
             "identity_similarity_target": self.identity_similarity_target,
         }

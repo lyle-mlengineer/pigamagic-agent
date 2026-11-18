@@ -32,7 +32,10 @@ needless 422 risk on the first real call.
   plan. The cap is applied in `fit_prompt`, which trims the *reference* portion
   first and never drops the subject or action.
 - `samples` accepts only `1`.
-- `steps` <= 50, `cfg_scale` <= 20 (and must be > 1).
+- `steps` <= 50, `cfg_scale` <= 20 (and must be > 1). The adapter sends
+  `AGENT_IMAGE_STEPS` (default 20) and `AGENT_IMAGE_CFG_SCALE` (default 3.5),
+  clamped to those documented limits, so quality/latency is configuration
+  rather than a code change.
 - `width`/`height` are documented as 512..1568 in steps of 16 with
   `width * height <= 1_062_400`. A shoot renders 1024x1024, which is inside the
   range and under the cap, so this adapter declares the single square size it
@@ -56,7 +59,7 @@ NVIDIA_BASE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs"
 # flux.2-klein-4b. Override with AGENT_IMAGE_MODEL.
 DEFAULT_MODEL = "flux-3-image-klein"
 
-DEFAULT_STEPS = 50
+DEFAULT_STEPS = 20
 DEFAULT_CFG_SCALE = 3.5
 
 # Documented hard limits on the hosted endpoint.
@@ -238,8 +241,12 @@ class NvidiaImageProvider(BaseImageProvider):
     ) -> tuple[bytes, dict[str, Any]]:
         fitted = self.fit_prompt(prompt)
 
-        steps = int(params.get("steps", DEFAULT_STEPS))
-        cfg_scale = float(params.get("cfg_scale", DEFAULT_CFG_SCALE))
+        steps = int(params.get("steps") or getattr(self.settings, "image_steps", DEFAULT_STEPS) or DEFAULT_STEPS)
+        cfg_scale = float(
+            params.get("cfg_scale")
+            or getattr(self.settings, "image_cfg_scale", DEFAULT_CFG_SCALE)
+            or DEFAULT_CFG_SCALE
+        )
         if not 1 <= steps <= MAX_STEPS:
             raise ProviderError(
                 f"NVIDIA steps must be 1..{MAX_STEPS}, got {steps}.",

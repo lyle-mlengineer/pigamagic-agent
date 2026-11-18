@@ -752,6 +752,32 @@ def test_nvidia_clamps_size_to_1024() -> None:
     assert captured["body"]["width"] == 1024 and captured["body"]["height"] == 1024
 
 
+def test_nvidia_steps_are_configurable_and_default_to_20() -> None:
+    """Diffusion steps are settings, not a constant baked into the adapter.
+
+    The hosted endpoint allows up to 50; 20 ships as the default because a
+    50-step portrait is materially slower for little visible gain. An explicit
+    `params` value still wins, so a caller can tune a single render.
+    """
+    assert _nvidia().settings.image_steps == 20
+
+    provider = _nvidia(image_steps=12, image_cfg_scale=4.0)
+    captured: dict[str, Any] = {}
+
+    async def fake_request(method, url, **kwargs):
+        captured["body"] = kwargs.get("json_body")
+        return {"artifacts": [{"base64": encode_b64(_png())}]}
+
+    provider.request_json = fake_request  # type: ignore[method-assign]
+    asyncio.run(provider.generate(prompt="a wedding portrait"))
+    assert captured["body"]["steps"] == 12
+    assert captured["body"]["cfg_scale"] == 4.0
+
+    captured.clear()
+    asyncio.run(provider.generate(prompt="a wedding portrait", params={"steps": 8}))
+    assert captured["body"]["steps"] == 8, "an explicit per-render value must win"
+
+
 def test_nvidia_rejects_out_of_range_steps_and_cfg() -> None:
     provider = _nvidia()
 

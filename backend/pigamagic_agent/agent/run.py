@@ -302,11 +302,18 @@ async def start_run(
     idempotency_key: str = "",
     budget: BudgetLedger | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    on_photo: Callable[[Any], None] | None = None,
+    on_failure: Callable[[dict[str, Any]], None] | None = None,
 ) -> RunResult:
     """Run the whole pipeline for one brief under a credit reservation.
 
     Never raises for provider or credit problems: a failure is a recorded,
     terminal run. The caller gets a run it can show, with the reason on it.
+
+    `on_photo` fires once per rendered photo, in plan order, *before* the run
+    settles — that is the hook an SSE endpoint uses to show photographs as they
+    land rather than after the whole batch. `on_failure` fires once per node
+    that produced nothing.
     """
     active = settings or get_settings()
     emit = on_event or (lambda _kind, _payload: None)
@@ -421,6 +428,8 @@ async def start_run(
             reference_images=reference_images,
             max_shots=shot_count,
             budget=budget,
+            on_photo=on_photo,
+            on_failure=on_failure,
         )
     except SafetyRefusal as exc:
         run.error = str(exc)
