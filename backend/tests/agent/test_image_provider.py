@@ -507,11 +507,77 @@ def test_huggingface_needs_no_api_key() -> None:
     asyncio.run(provider.estimate_cost(count=1))  # must not raise
 
 
-def test_huggingface_default_model_is_ungated() -> None:
-    """The default must work in a fresh Colab with no licence click."""
+def test_huggingface_default_model_is_honestly_flagged_gated() -> None:
+    """FLUX.1-schnell is gated since 2026, and the spec must say so."""
     from pigamagic_agent.agent.providers.image_huggingface import DEFAULT_MODEL, resolve_spec
 
-    assert resolve_spec(DEFAULT_MODEL).gated is False
+    assert resolve_spec(DEFAULT_MODEL).gated is True
+
+
+def test_ungated_alternatives_really_need_no_account() -> None:
+    from pigamagic_agent.agent.providers.image_huggingface import (
+        UNGATED_MODELS,
+        resolve_spec,
+    )
+
+    assert UNGATED_MODELS
+    for model in UNGATED_MODELS:
+        assert resolve_spec(model).gated is False, model
+
+
+def test_gated_help_never_recommends_the_model_that_failed() -> None:
+    """The old message told a schnell user to switch to schnell. Never again."""
+    from pigamagic_agent.agent.providers.image_huggingface import gated_help
+
+    text = gated_help("black-forest-labs/FLUX.1-schnell")
+    assert "https://huggingface.co/black-forest-labs/FLUX.1-schnell" in text
+    assert "settings/tokens" in text
+    assert "AGENT_IMAGE_API_KEY" in text
+    assert "Qwen/Qwen-Image-Edit-2509" in text  # a real ungated way out
+    assert "is gated" in text
+
+
+def test_gated_checkpoint_without_a_token_fails_before_downloading() -> None:
+    """Gating is caught locally: no network call, no 40 GB attempt."""
+    provider = _hf("black-forest-labs/FLUX.1-schnell")
+    with pytest.raises(ProviderError) as info:
+        provider.preflight()
+    assert "gated" in str(info.value).casefold()
+
+
+def test_preflight_allows_a_gated_model_once_a_token_is_set() -> None:
+    provider = _hf("black-forest-labs/FLUX.1-schnell")
+    provider.api_key = "hf_test"
+    provider.preflight()  # must not raise: the licence may already be accepted
+
+
+def test_preflight_ignores_ungated_models() -> None:
+    provider = _hf("stabilityai/sdxl-turbo")
+    provider.preflight()  # no token, no licence, still fine
+
+
+def test_bad_token_is_reported_as_a_token_problem_not_gating(monkeypatch) -> None:
+    """A 401 used to be flattened into "is gated", which sent people in circles."""
+    import sys
+    import types
+
+    provider = _hf("stabilityai/sdxl-turbo")
+    provider.api_key = "hf_bad"
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("401 Client Error: Unauthorized for url https://huggingface.co/api/models/x")
+
+    fake_pipeline = types.SimpleNamespace(from_pretrained=_boom)
+    monkeypatch.setitem(
+        sys.modules, "diffusers", types.SimpleNamespace(DiffusionPipeline=fake_pipeline)
+    )
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32=None))
+
+    with pytest.raises(ProviderError) as info:
+        provider.load()
+    message = str(info.value).casefold()
+    assert "token" in message
+    assert "gated" not in message
 
 
 def test_qwen_alias_selects_the_identity_preserving_model() -> None:
@@ -609,7 +675,6 @@ def test_colab_models_are_offered_in_the_capability_summary() -> None:
     rows = {row["name"]: row for row in describe_image_providers()}
     assert rows["huggingface"]["price_usd"] == 0.0
     assert rows["huggingface"]["identity_refs"] is False  # default is text-to-image
-
 
 # --------------------------------------------------------------------------
 # NVIDIA NIM / Black Forest Labs

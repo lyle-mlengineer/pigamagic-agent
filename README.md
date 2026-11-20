@@ -260,6 +260,11 @@ Render a couple of photos with the fixture provider (real PNGs, synthetic conten
 python -m pigamagic_agent.agent.cli render --brief wedding --store local --provider fixture --max-shots 2
 ```
 
+Render all 16 photos:
+```bash
+ python -m pigamagic_agent.agent.cli render --brief wedding
+ ```
+
 The files land under `AGENT_MEDIA_DIR` (default `D:/pigamagic-media/agent` in `.env.example`, `./var/media` in code).
 
 > **Note on the CLI.** `render` uses the built-in demonstration cast and venue (`cli.demo_cast`, `cli._demo_venue`), because the CLI has no upload path. Real casts come from the vision pass over the user's reference photos via the API or the product shell. The CLI's job is to prove the agent layer end to end, cheaply.
@@ -310,7 +315,7 @@ DuckDuckGo is the only zero-setup real search, but it is an undocumented endpoin
 | --- | --- | --- |
 | `AGENT_LLM_API_KEY` | Groq planner | also readable as `AGENT_GROQ_API_KEY` |
 | `AGENT_VISION_API_KEY` | Nemotron VL | falls back to `AGENT_NVIDIA_API_KEY` |
-| `AGENT_IMAGE_API_KEY` | Gemini / OpenAI / fal / Hugging Face | for Hugging Face this is an **HF token**, only needed for gated models |
+| `AGENT_IMAGE_API_KEY` | Gemini / OpenAI / fal / Hugging Face | for Hugging Face this is an **HF token**, needed for gated checkpoints (which now includes `FLUX.1-schnell`) |
 | `AGENT_WEB_API_KEY` | Serper / Brave | also readable as `AGENT_SERPER_API_KEY`; keyless providers need nothing |
 | `AGENT_NVIDIA_API_KEY` | NVIDIA NIM (image **and** vision) | get one at <https://build.nvidia.com> → profile → API Keys |
 | `AGENT_NVIDIA_IMAGE_BASE_URL` | NVIDIA NIM | default `https://ai.api.nvidia.com/v1/genai/black-forest-labs` |
@@ -326,7 +331,7 @@ Leave blank to use the provider's pinned, tested default.
 | `AGENT_VISION_MODEL` | provider default |
 | `AGENT_IMAGE_MODEL` | `gemini` → `gemini-3.1-flash-image`; `openai` → `gpt-image-2.5-flare`; `fal` → `blackforestlabs/flux-3/text-to-image`; `nvidia` → `flux-3-image-klein`; `huggingface` → `black-forest-labs/FLUX.1-schnell`; `qwen` → `Qwen/Qwen-Image-Edit-2509` |
 
-**Identity-preserving local models:** `Qwen/Qwen-Image-Edit-2509` (up to 3 reference faces, the right choice for this app) and `black-forest-labs/FLUX.1-Kontext-dev` (gated, 1 reference). Text-only local models: `FLUX.1-schnell` (ungated, 4 steps, fastest), `FLUX.1-dev` (gated), `Qwen/Qwen-Image`, `stabilityai/stable-diffusion-3.5-large`.
+**Identity-preserving local models:** `Qwen/Qwen-Image-Edit-2509` (up to 3 reference faces, the right choice for this app; ungated) and `black-forest-labs/FLUX.1-Kontext-dev` (gated, 1 reference). Text-only local models: `FLUX.1-schnell` (4 steps, fastest, **gated since 2026** — needs a free HF token), `FLUX.1-dev` (gated), `Qwen/Qwen-Image` (ungated), `stabilityai/sdxl-turbo` (ungated, ~2.6 GB), `stabilityai/stable-diffusion-3.5-large` (gated). Hugging Face flips the `gated` flag without notice, so the source of truth is `MODEL_SPECS` / `UNGATED_MODELS` in `providers/image_huggingface.py`.
 
 ### Budgets, limits and determinism
 
@@ -582,12 +587,23 @@ You should see a Tesla T4 and ~15 GB of memory.
 
 Colab already ships a CUDA build of `torch`; these commands only add the pipeline libraries. Expect 1–2 minutes.
 
-> `scripts/colab_smoke.py` builds its own `AgentSettings(_env_file=None, …)`, so **no `.env` file and no API key are needed** on Colab. Model selection comes from the `PLUSONE_MODEL` environment variable.
+> `scripts/colab_smoke.py` builds its own `AgentSettings(_env_file=None, …)`, so **no `.env` file and no API key are needed** on Colab. Model selection comes from the `PLUSONE_MODEL` environment variable; with no selection the script picks `FLUX.1-schnell` when `HF_TOKEN` is set and the ungated `stabilityai/sdxl-turbo` otherwise.
 
-### 4. First run: FLUX.1-schnell (no token, no licence)
+### 4. First run: sdxl-turbo without a token, or FLUX.1-schnell with one
+
+No account, no licence, no download queue:
 
 ```python
 !PYTHONPATH=. python scripts/colab_smoke.py
+```
+
+That runs `stabilityai/sdxl-turbo` (~2.6 GB, 2 steps). For the sharper FLUX.1-schnell — which Hugging Face **gated** in 2026, so it needs a one-click licence acceptance and a free token — set the token first:
+
+```python
+import os
+os.environ["HF_TOKEN"] = "hf_..."      # https://huggingface.co/settings/tokens
+# ...after accepting the licence at https://huggingface.co/black-forest-labs/FLUX.1-schnell
+os.environ["PLUSONE_MODEL"] = "black-forest-labs/FLUX.1-schnell"
 ```
 
 What happens:
@@ -597,7 +613,7 @@ What happens:
 3. renders the first `MAX_SHOTS = 4` shots at 1024×1024;
 4. writes PNGs to `out/` and unloads the model to free VRAM.
 
-The first run downloads several gigabytes of weights (roughly 12–20 GB depending on the checkpoint), so budget a few minutes for the download and a few tens of seconds per image on a T4.
+The first run downloads several gigabytes of weights (roughly 2.6–20 GB depending on the checkpoint), so budget a few minutes for the download and a few tens of seconds per image on a T4.
 
 > The `PYTHONPATH=.` matters: running a file inside `scripts/` puts *that* folder on `sys.path`, not `backend/`, so the import of `pigamagic_agent` fails otherwise.
 >
@@ -620,7 +636,7 @@ Notes:
 
 - the adapter puts the pipeline in fp16 and enables **CPU offload** automatically on a T4, because the weights exceed VRAM;
 - expect several minutes per image on a free T4, and possible out-of-memory on a small runtime. If it OOMs, switch to a high-RAM GPU runtime, or set `WIDTH = HEIGHT = 512` at the top of the script while testing;
-- the model is ungated but large; the download alone takes a while.
+- the model is ungated (no token, no licence) but large; the download alone takes a while.
 
 ### 6. Reference photos (the whole point of the identity path)
 
@@ -698,7 +714,8 @@ p.write_text(text)
 | `torch is missing` | runtime reverted to CPU or the session reset — reinstall `diffusers transformers accelerate safetensors` |
 | No GPU detected | **Runtime → Change runtime type → T4 GPU**, then reconnect |
 | Out-of-memory or the kernel dies on Qwen | a free T4 has 16 GB; use a high-RAM runtime, lower `WIDTH`/`HEIGHT`, or render fewer shots |
-| `401` / `403` / "gated" on a FLUX dev or Kontext model | accept the licence on the model page and supply an HF token as `AGENT_IMAGE_API_KEY`; or use the ungated `FLUX.1-schnell` |
+| `401` on a Hugging Face model | the token is wrong, expired or has no read scope: create a new one at https://huggingface.co/settings/tokens and set it as `AGENT_IMAGE_API_KEY` |
+| `403` / "is gated" on any FLUX model (including `FLUX.1-schnell`, gated since 2026) | accept the licence on the model page, then supply an HF token as `AGENT_IMAGE_API_KEY`; or switch to an ungated checkpoint: `Qwen/Qwen-Image-Edit-2509`, `Qwen/Qwen-Image` or `stabilityai/sdxl-turbo` |
 | Generated faces do not match the references | you are on a text-to-image model, or `REFERENCE_PATHS` is empty; use `Qwen/Qwen-Image-Edit-2509` |
 | Session disconnects mid-run | free runtimes expire; render fewer shots per run and save to Drive |
 

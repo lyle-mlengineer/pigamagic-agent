@@ -1,7 +1,8 @@
 # PlusOne — Colab smoke test for local Hugging Face image models
 #
 # Paste this into a Colab notebook (GPU runtime) to generate REAL photos from a
-# golden brief using open-weight models. No API key needed for the default model.
+# golden brief using open-weight models. No API key needed: with no HF_TOKEN the
+# script runs the ungated sdxl-turbo; set HF_TOKEN to get FLUX.1-schnell.
 #
 # Runtime > Change runtime type > T4 GPU
 #
@@ -11,11 +12,13 @@
 # Cell 2: clone/upload this repo, then run this file.
 #
 # ── Which model to use ──────────────────────────────────────────────────────
-#   FLUX.1-schnell        ungated, 4 steps, fastest. No licence click. Default.
-#   Qwen-Image-Edit-2509  PRESERVES FACIAL IDENTITY from reference photos.
+#   sdxl-turbo            ungated, ~2.6 GB, 2 steps. Zero-setup default.
+#   Qwen-Image-Edit-2509  ungated, PRESERVES FACIAL IDENTITY from references.
 #                         This is the one that answers "is it really me?".
-#   FLUX.1-dev / Kontext  gated: accept the licence on the HF model page and
-#                         set HF_TOKEN.
+#   FLUX.1-schnell        4 steps, fastest — but gated since 2026: accept the
+#                         licence on its HF page and set HF_TOKEN, then pass
+#                         PLUSONE_MODEL=black-forest-labs/FLUX.1-schnell.
+#   FLUX.1-dev / Kontext  gated too: licence click plus HF_TOKEN.
 # ────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -27,15 +30,29 @@ import time
 
 # --- configuration ---------------------------------------------------------
 
-# Start here: no licence, no token, ~1 minute on a free T4.
-MODEL = os.environ.get("PLUSONE_MODEL", "black-forest-labs/FLUX.1-schnell")
-
-# For identity-preserving runs, use:
-#   MODEL = "Qwen/Qwen-Image-Edit-2509"
-# and provide reference photos (see REFERENCE_PATHS below).
-
 # Gated models need a Hugging Face token: https://huggingface.co/settings/tokens
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
+
+def pick_model() -> str:
+    """Choose a checkpoint that can actually download in this runtime.
+
+    `FLUX.1-schnell` is the fastest thing here but Hugging Face gated it, so it
+    needs both a licence click and `HF_TOKEN`. With no token the script starts
+    on an ungated checkpoint instead of dying on a 403 after a long download.
+    """
+    chosen = os.environ.get("PLUSONE_MODEL", "").strip()
+    if chosen:
+        return chosen
+    if HF_TOKEN:
+        return "black-forest-labs/FLUX.1-schnell"
+
+    from pigamagic_agent.agent.providers.image_huggingface import QUICK_TEST_MODEL
+
+    return QUICK_TEST_MODEL
+
+
+MODEL = pick_model()
 
 BRIEF = "wedding"
 OUTPUT_DIR = "out"
@@ -68,6 +85,20 @@ def check_environment() -> None:
             "diffusers is missing. Run:\n"
             "  !pip install -q diffusers transformers accelerate safetensors"
         )
+
+    # Gating is the one failure that costs a download first, so check it here.
+    from pigamagic_agent.agent.providers.image_huggingface import (
+        is_gated,
+        ungated_alternatives,
+    )
+
+    if is_gated(MODEL) and not HF_TOKEN:
+        print(
+            f"\n{MODEL} is gated: accept its licence at "
+            f"https://huggingface.co/{MODEL} and set HF_TOKEN, or re-run with\n"
+            f"  PLUSONE_MODEL={ungated_alternatives(MODEL)[0]}  (ungated, no token)\n"
+        )
+        sys.exit(1)
 
 
 async def main() -> int:

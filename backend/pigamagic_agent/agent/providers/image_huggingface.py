@@ -19,9 +19,19 @@ family is described once in `MODEL_SPECS`:
 | `Qwen/Qwen-Image-Edit` | yes, 1 | older, weaker identity retention |
 | `Qwen/Qwen-Image` | no | strongest text rendering; text-to-image only |
 | `black-forest-labs/FLUX.1-Kontext-dev` | yes, 1 | gated; instruction-based editing |
-| `black-forest-labs/FLUX.1-schnell` | no | **ungated**, 4 steps, the default: works with zero setup |
+| `black-forest-labs/FLUX.1-schnell` | no | 4 steps, fastest; **gated since 2026**, needs a free token |
 | `black-forest-labs/FLUX.1-dev` | no | gated, higher quality text-to-image |
-| `stabilityai/stable-diffusion-3.5-large` | no | well-supported fallback |
+| `stabilityai/stable-diffusion-3.5-large` | no | gated, well-supported fallback |
+| `stabilityai/sdxl-turbo` | no | ungated, ~2.6 GB, the zero-setup quick check |
+
+## Hugging Face gating (the one thing that breaks a fresh Colab)
+
+A checkpoint is *gated* when the HF API reports `gated: "auto"`: it downloads
+only for an account that has accepted the licence on the model page, with a
+token attached. This changes without notice — `FLUX.1-schnell` was ungated when
+this module was written and is not any more — so the flags live in
+`MODEL_SPECS`, `preflight()` refuses early instead of after a 40 GB download,
+and `UNGATED_MODELS` is the honest list of what still needs no account.
 
 ## Two API traps this module handles
 
@@ -126,11 +136,12 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         model_id="black-forest-labs/FLUX.1-schnell",
         family="flux",
         identity_refs=0,
+        gated=True,  # was ungated; Hugging Face flipped it to gated:auto
         steps=4,
         guidance_scale=0.0,  # timestep-distilled: must be 0
         max_sequence_length=256,  # documented ceiling for schnell
         sizes=_SQUARE_AND_LANDSCAPE,
-        note="ungated, 4 steps; works with zero setup",
+        note="gated (auto-approve): needs a free HF token; 4 steps, fastest",
     ),
     "black-forest-labs/FLUX.1-dev": ModelSpec(
         model_id="black-forest-labs/FLUX.1-dev",
@@ -152,12 +163,37 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         steps=40,
         guidance_scale=4.5,
         sizes=_SQUARE_AND_LANDSCAPE,
-        note="well-supported fallback",
+        note="gated; well-supported fallback",
+    ),
+    "stabilityai/sdxl-turbo": ModelSpec(
+        model_id="stabilityai/sdxl-turbo",
+        family="sd",
+        identity_refs=0,
+        steps=2,
+        guidance_scale=0.0,  # distilled: CFG must stay off
+        max_sequence_length=None,  # no T5 encoder to truncate
+        sizes=((512, 512), (768, 768), (1024, 1024)),
+        note="ungated and tiny (~2.6 GB); the zero-setup smoke test",
     ),
 }
 
-# Ungated default: works in a fresh Colab with no licence click.
+# Fastest checkpoint, and what a Colab run wants once a token is present.
+# Gated by Hugging Face since 2026: see `gated_help()` for the two-click fix.
 DEFAULT_MODEL = "black-forest-labs/FLUX.1-schnell"
+
+# Small, ungated, ~2 sentences of setup: what a fresh Colab can run with no
+# account at all.
+QUICK_TEST_MODEL = "stabilityai/sdxl-turbo"
+
+# Checkpoints that download with no account, no licence click and no token.
+# Verified against https://huggingface.co/api/models/<id> (`gated: false`);
+# keep this in sync with MODEL_SPECS[*].gated when Hugging Face changes its mind.
+UNGATED_MODELS: tuple[str, ...] = (
+    "Qwen/Qwen-Image-Edit-2509",
+    "Qwen/Qwen-Image-Edit",
+    "Qwen/Qwen-Image",
+    "stabilityai/sdxl-turbo",
+)
 
 # Weights ~12-20 GB for FLUX/Qwen; a free Colab T4 has 16 GB, so offloading and
 # fp16 are required rather than nice-to-have.
@@ -195,6 +231,42 @@ def _guess_family(model_id: str) -> str:
     if "flux" in lowered:
         return "flux"
     return "sd"
+
+
+def is_gated(model_id: str) -> bool:
+    """True when the checkpoint needs a licence click and a token to download."""
+    return resolve_spec(model_id).gated
+
+
+def ungated_alternatives(model_id: str, *, limit: int = 2) -> list[str]:
+    """Ungated checkpoints to switch to, best-first, never the failing one."""
+    return [m for m in UNGATED_MODELS if m != model_id][:limit]
+
+
+def gated_help(model_id: str) -> str:
+    """The two clicks that fix a gated download, plus the way around it.
+
+    Written as one string so the same text reaches a Colab user, a CLI error and
+    a log line. It must never recommend the checkpoint that just failed.
+    """
+    text = (
+        f"{model_id} is gated on Hugging Face: it downloads only for an account "
+        f"that has accepted its licence, using a token.\n"
+        f"  1. accept the licence: https://huggingface.co/{model_id}\n"
+        f"  2. copy a read token: https://huggingface.co/settings/tokens\n"
+        f"  3. pass it as AGENT_IMAGE_API_KEY (HF_TOKEN for scripts/colab_smoke.py)\n"
+        f"Approval is automatic, so a fresh token works immediately."
+    )
+    alternatives = ungated_alternatives(model_id)
+    if alternatives:
+        text += (
+            "\nNo account? These checkpoints are ungated and download as-is: "
+            + ", ".join(alternatives)
+            + "."
+        )
+    # Trailing newline: ProviderError.__str__ appends "provider=... retryable=..."
+    # on the same line, and it must not run into the last step.
+    return text + "\n"
 
 
 class HuggingFaceImageProvider(BaseImageProvider):
@@ -261,6 +333,16 @@ class HuggingFaceImageProvider(BaseImageProvider):
     def resolve_model(self, override: str | None) -> str:
         return override or self.model or DEFAULT_MODEL
 
+    def preflight(self, model: str | None = None) -> None:
+        """Refuse a gated checkpoint *before* the multi-gigabyte download.
+
+        Without this, a tokenless Colab run spends minutes fetching nothing and
+        then fails with a 403 that reads like a network fault.
+        """
+        target = self.resolve_model(model)
+        if is_gated(target) and not self.api_key:
+            raise ProviderError(gated_help(target), provider=self.name, retryable=False)
+
     # -- loading ---------------------------------------------------------
 
     def load(self, model: str | None = None) -> Any:
@@ -278,6 +360,9 @@ class HuggingFaceImageProvider(BaseImageProvider):
                 provider=self.name,
                 retryable=False,
             ) from exc
+
+        # Cheap, local, and worth doing before touching the network.
+        self.preflight(target)
 
         spec = resolve_spec(target)
         has_cuda = self._has_cuda(torch)
@@ -297,14 +382,32 @@ class HuggingFaceImageProvider(BaseImageProvider):
         except Exception as exc:  # noqa: BLE001
             message = str(exc)
             lowered = message.casefold()
-            if "gated" in lowered or "401" in lowered or "403" in lowered:
+            # GatedRepoError first: its text also contains 401/403, so checking
+            # the status codes first would blame the token for a licence issue.
+            if "gated" in lowered or "awaiting a review" in lowered:
                 raise ProviderError(
-                    f"{target} is gated. Accept its licence at "
-                    f"https://huggingface.co/{target}, then pass a Hugging Face "
-                    f"token as AGENT_IMAGE_API_KEY. Or use the ungated "
-                    f"'{DEFAULT_MODEL}'.",
+                    gated_help(target), provider=self.name, retryable=False
+                ) from exc
+            if "401" in lowered or "unauthorized" in lowered or "invalid credentials" in lowered:
+                raise ProviderError(
+                    f"Hugging Face rejected the token while loading {target}. "
+                    f"Create a read token at https://huggingface.co/settings/tokens "
+                    f"and pass it as AGENT_IMAGE_API_KEY with no quotes and no "
+                    f"'Bearer ' prefix.",
                     provider=self.name,
                     retryable=False,
+                ) from exc
+            if "404" in lowered or "not found" in lowered or "repo_id" in lowered:
+                raise ProviderError(
+                    f"{target} is not a valid Hugging Face repo id. Use "
+                    f"'organisation/model'. Ungated options: "
+                    + ", ".join(UNGATED_MODELS),
+                    provider=self.name,
+                    retryable=False,
+                ) from exc
+            if "403" in lowered:
+                raise ProviderError(
+                    gated_help(target), provider=self.name, retryable=False
                 ) from exc
             raise ProviderError(
                 f"Could not load {target}: {message[:300]}",
@@ -557,5 +660,10 @@ __all__ = [
     "HuggingFaceImageProvider",
     "MODEL_SPECS",
     "ModelSpec",
+    "QUICK_TEST_MODEL",
+    "UNGATED_MODELS",
+    "gated_help",
+    "is_gated",
     "resolve_spec",
+    "ungated_alternatives",
 ]

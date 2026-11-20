@@ -406,9 +406,12 @@ Built from your `black_forest.py` sample, verified against `docs.api.nvidia.com`
 
 Runs real open weights on a free Colab T4. A `MODEL_SPECS` table encodes each family's true parameters, because guessing them produces mush:
 
-- **`Qwen/Qwen-Image-Edit-2509`** — documented to *preserve facial identity across poses*, up to 3 reference images. This is the model that answers "is it really me?"
-- **`FLUX.1-schnell`** — ungated, 4 steps, the default: works with zero setup
-- FLUX.1-dev / Kontext-dev / SD3.5 — gated, need an `HF_TOKEN`
+- **`Qwen/Qwen-Image-Edit-2509`** — documented to *preserve facial identity across poses*, up to 3 reference images, ungated. This is the model that answers "is it really me?"
+- **`FLUX.1-schnell`** — 4 steps, fastest, the default; **gated by Hugging Face in 2026**, so it now needs a licence click plus a free `HF_TOKEN`
+- **`stabilityai/sdxl-turbo`** — ungated, ~2.6 GB, 2 steps: the zero-setup smoke test
+- FLUX.1-dev / Kontext-dev / SD3.5 — gated too, need an `HF_TOKEN`
+
+Gating is a moving target, so `UNGATED_MODELS` is the list of what still needs no account, `preflight()` refuses a gated checkpoint *before* the download instead of after it, and `gated_help()` produces one message that names the licence URL, the token page and a genuinely ungated alternative (the old message told `FLUX.1-schnell` users to switch to `FLUX.1-schnell`).
 
 Two API traps handled explicitly:
 1. **Qwen ignores `guidance_scale`.** Real guidance is `true_cfg_scale`, and CFG only activates with a `negative_prompt`. Passing `guidance_scale` does nothing.

@@ -490,6 +490,17 @@ def describe_active_stack(settings: AgentSettings | None = None) -> list[dict[st
             row["note"] = "text-to-image only: references are dropped and likeness is not kept"
         elif row["usable"] and surface == "web" and row["provider"] == "duckduckgo":
             row["note"] = "keyless; rate-limits datacenter IPs"
+
+        # A gated checkpoint needs a licence click *and* a token, which is not
+        # the same failure as a missing vendor key.
+        if surface == "image" and row["provider"] == "huggingface":
+            from pigamagic_agent.agent.providers.image_huggingface import is_gated
+
+            if is_gated(row["model"]):
+                row["note"] = (
+                    f"{row['model']} is gated on Hugging Face: accept its licence "
+                    f"and set AGENT_IMAGE_API_KEY, or choose an ungated checkpoint"
+                )
         rows.append(row)
     return rows
 
