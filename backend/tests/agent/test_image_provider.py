@@ -507,11 +507,19 @@ def test_huggingface_needs_no_api_key() -> None:
     asyncio.run(provider.estimate_cost(count=1))  # must not raise
 
 
-def test_huggingface_default_model_is_honestly_flagged_gated() -> None:
-    """FLUX.1-schnell is gated since 2026, and the spec must say so."""
+def test_huggingface_default_model_is_ungated() -> None:
+    """A fresh Colab must need no token and no licence click."""
     from pigamagic_agent.agent.providers.image_huggingface import DEFAULT_MODEL, resolve_spec
 
-    assert resolve_spec(DEFAULT_MODEL).gated is True
+    assert DEFAULT_MODEL == "Qwen/Qwen-Image-2.1-Turbo"
+    assert resolve_spec(DEFAULT_MODEL).gated is False
+
+
+def test_schnell_is_still_flagged_gated() -> None:
+    """Hugging Face gated it in 2026; the spec has to keep saying so."""
+    from pigamagic_agent.agent.providers.image_huggingface import resolve_spec
+
+    assert resolve_spec("black-forest-labs/FLUX.1-schnell").gated is True
 
 
 def test_ungated_alternatives_really_need_no_account() -> None:
@@ -671,10 +679,79 @@ def test_model_specs_are_internally_consistent() -> None:
             assert 0 < spec.max_sequence_length <= 4096
 
 
+def test_qwen21_turbo_uses_its_documented_parameters() -> None:
+    """QwenImage21Pipeline rejects guidance_scale and max_sequence_length."""
+    from pigamagic_agent.agent.providers.image_huggingface import resolve_spec
+
+    spec = resolve_spec("Qwen/Qwen-Image-2.1-Turbo")
+    assert spec.gated is False
+    assert spec.steps == 8  # the checkpoint ships a fixed 8-step schedule
+    assert spec.guidance_scale is None  # no such kwarg on this pipeline
+    assert spec.max_sequence_length is None
+    assert spec.true_cfg_scale is None  # guidance-free by design
+    assert spec.supports_negative_prompt is False  # nothing to feed a negative to
+    assert spec.dtype == "bfloat16"
+    assert spec.offload == "sequential"  # 17.5 GB text encoder vs a 16 GB T4
+    assert spec.identity_refs >= 1  # the card shows multi-reference composition
+    assert spec.use_kv_cache is True
+
+
+def test_qwen21_turbo_accepts_identity_refs() -> None:
+    provider = _hf("Qwen/Qwen-Image-2.1-Turbo")
+    assert provider.capabilities.supports_identity_refs is True
+    assert provider.capabilities.max_identity_refs >= 1
+    assert provider.capabilities.supports_negative_prompt is False
+
+
+def test_qwen21_negative_prompt_is_folded_into_the_prompt(monkeypatch) -> None:
+    """With CFG off, a negative_prompt kwarg is ignored: fold it, do not drop it."""
+    import sys
+    import types
+
+    seen: dict[str, Any] = {}
+
+    class _Result:
+        images: list[Any] = []
+
+    def _call(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return _Result()
+
+    provider = _hf("Qwen/Qwen-Image-2.1-Turbo")
+    provider.pipeline = _call
+    provider._loaded_model = provider.model
+    provider._dependencies_available = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(
+            Generator=lambda **kw: types.SimpleNamespace(manual_seed=lambda s: None),
+            float32=None,
+        ),
+    )
+
+    # No images come back from the stub, which is the ProviderError we expect.
+    with pytest.raises(ProviderError):
+        provider.generate_sync(
+            prompt="the bride under the colonnade",
+            negative_prompt="malformed hands",
+            width=1024,
+            height=1024,
+        )
+
+    assert "malformed hands" in seen["prompt"].casefold()
+    assert "negative_prompt" not in seen
+    assert "guidance_scale" not in seen
+    assert "max_sequence_length" not in seen
+    assert seen["use_kv_cache"] is True
+
+
 def test_colab_models_are_offered_in_the_capability_summary() -> None:
-    rows = {row["name"]: row for row in describe_image_providers()}
+    rows = {row["name"]: row for row in describe_image_providers(_settings(image_model=""))}
     assert rows["huggingface"]["price_usd"] == 0.0
-    assert rows["huggingface"]["identity_refs"] is False  # default is text-to-image
+    # The default is Qwen-Image-2.1-Turbo, which does take reference photos.
+    assert rows["huggingface"]["identity_refs"] is True
+    assert rows["huggingface"]["needs_key"] is False
 
 # --------------------------------------------------------------------------
 # NVIDIA NIM / Black Forest Labs

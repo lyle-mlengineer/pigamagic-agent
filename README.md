@@ -329,9 +329,9 @@ Leave blank to use the provider's pinned, tested default.
 | --- | --- |
 | `AGENT_LLM_MODEL` | provider default |
 | `AGENT_VISION_MODEL` | provider default |
-| `AGENT_IMAGE_MODEL` | `gemini` → `gemini-3.1-flash-image`; `openai` → `gpt-image-2.5-flare`; `fal` → `blackforestlabs/flux-3/text-to-image`; `nvidia` → `flux-3-image-klein`; `huggingface` → `black-forest-labs/FLUX.1-schnell`; `qwen` → `Qwen/Qwen-Image-Edit-2509` |
+| `AGENT_IMAGE_MODEL` | `gemini` → `gemini-3.1-flash-image`; `openai` → `gpt-image-2.5-flare`; `fal` → `blackforestlabs/flux-3/text-to-image`; `nvidia` → `flux-3-image-klein`; `huggingface` / `qwen` → `Qwen/Qwen-Image-2.1-Turbo` |
 
-**Identity-preserving local models:** `Qwen/Qwen-Image-Edit-2509` (up to 3 reference faces, the right choice for this app; ungated) and `black-forest-labs/FLUX.1-Kontext-dev` (gated, 1 reference). Text-only local models: `FLUX.1-schnell` (4 steps, fastest, **gated since 2026** — needs a free HF token), `FLUX.1-dev` (gated), `Qwen/Qwen-Image` (ungated), `stabilityai/sdxl-turbo` (ungated, ~2.6 GB), `stabilityai/stable-diffusion-3.5-large` (gated). Hugging Face flips the `gated` flag without notice, so the source of truth is `MODEL_SPECS` / `UNGATED_MODELS` in `providers/image_huggingface.py`.
+**Local models (`huggingface` provider):** the default is `Qwen/Qwen-Image-2.1-Turbo` — ungated, 8 steps, text-to-image **and** editing straight from reference photos. Alternatives: `Qwen/Qwen-Image-Edit-2509` (ungated, up to 3 reference faces, the most explicitly identity-preserving), `Qwen/Qwen-Image-Edit` (1 ref), `Qwen/Qwen-Image` (text-to-image only), `stabilityai/sdxl-turbo` (ungated, ~2.6 GB, the quick plumbing check), `black-forest-labs/FLUX.1-schnell` (4 steps, but **gated since 2026** — needs a free HF token), `FLUX.1-dev` / `FLUX.1-Kontext-dev` / `stabilityai/stable-diffusion-3.5-large` (all gated). Hugging Face flips the `gated` flag without notice, so the source of truth is `MODEL_SPECS` / `UNGATED_MODELS` in `providers/image_huggingface.py`.
 
 ### Budgets, limits and determinism
 
@@ -582,22 +582,29 @@ You should see a Tesla T4 and ~15 GB of memory.
 
 ```python
 !pip install -q -r requirements.txt
-!pip install -q diffusers transformers accelerate safetensors
+!pip install -q git+https://github.com/huggingface/diffusers.git "transformers>=5.17" accelerate safetensors
 ```
 
-Colab already ships a CUDA build of `torch`; these commands only add the pipeline libraries. Expect 1–2 minutes.
+Colab already ships a CUDA build of `torch`; these commands only add the pipeline libraries. The diffusers `main` install is required: `Qwen-Image-2.1` uses the `QwenImage21Pipeline` class that only exists there (PR #14950), and its `Qwen3VL` text encoder needs `transformers>=5.17`. Expect 1–2 minutes.
 
-> `scripts/colab_smoke.py` builds its own `AgentSettings(_env_file=None, …)`, so **no `.env` file and no API key are needed** on Colab. Model selection comes from the `PLUSONE_MODEL` environment variable; with no selection the script picks `FLUX.1-schnell` when `HF_TOKEN` is set and the ungated `stabilityai/sdxl-turbo` otherwise.
+> `scripts/colab_smoke.py` builds its own `AgentSettings(_env_file=None, …)`, so **no `.env` file and no API key are needed** on Colab. Model selection comes from the `PLUSONE_MODEL` environment variable; with none set it uses the ungated `Qwen/Qwen-Image-2.1-Turbo`.
 
-### 4. First run: sdxl-turbo without a token, or FLUX.1-schnell with one
-
-No account, no licence, no download queue:
+### 4. First run: Qwen-Image-2.1-Turbo (no token, no licence)
 
 ```python
 !PYTHONPATH=. python scripts/colab_smoke.py
 ```
 
-That runs `stabilityai/sdxl-turbo` (~2.6 GB, 2 steps). For the sharper FLUX.1-schnell — which Hugging Face **gated** in 2026, so it needs a one-click licence acceptance and a free token — set the token first:
+That runs `Qwen/Qwen-Image-2.1-Turbo` — ungated, 8 steps, and it can use reference photos. It downloads ~32 GB, so give the first run time.
+
+For a 2-minute plumbing check (no identity, lower quality) use the tiny fallback instead:
+
+```python
+%env PLUSONE_MODEL=stabilityai/sdxl-turbo
+!PYTHONPATH=. python scripts/colab_smoke.py
+```
+
+Or the sharper but **gated** `FLUX.1-schnell` — accept its licence once, then set the token:
 
 ```python
 import os
@@ -613,19 +620,24 @@ What happens:
 3. renders the first `MAX_SHOTS = 4` shots at 1024×1024;
 4. writes PNGs to `out/` and unloads the model to free VRAM.
 
-The first run downloads several gigabytes of weights (roughly 2.6–20 GB depending on the checkpoint), so budget a few minutes for the download and a few tens of seconds per image on a T4.
+The first run downloads several gigabytes of weights (roughly 32 GB for Qwen-Image-2.1-Turbo, 2.6 GB for sdxl-turbo), so budget a few minutes for the download and a few tens of seconds to a couple of **minutes per image** on a T4. `Qwen-Image-2.1-Turbo` asks for `bfloat16`, which a T4 cannot run, so the adapter falls back to `float16` and uses **sequential CPU offload** — the 17.5 GB text encoder cannot share a 16 GB card with the 14 GB transformer.
 
-> The `PYTHONPATH=.` matters: running a file inside `scripts/` puts *that* folder on `sys.path`, not `backend/`, so the import of `pigamagic_agent` fails otherwise.
+> `PYTHONPATH=.` is still what the docs use, but it is no longer required: the script puts `backend/` on `sys.path` itself, so `%run scripts/colab_smoke.py` and `python scripts/colab_smoke.py` both work from any directory.
 >
-> In a notebook cell you can instead use `%run`, which inherits the notebook path:
+> In a notebook cell you can use `%run`, which inherits the notebook path:
 >
 > ```python
 > %run scripts/colab_smoke.py
 > ```
+>
+> `%run` executes inside the kernel, which already owns an asyncio loop, so the
+> script reuses that loop (or re-executes itself in a subprocess if
+> `nest_asyncio` is missing) instead of failing with
+> `RuntimeError: asyncio.run() cannot be called from a running event loop`.
 
 ### 5. Identity-preserving run: Qwen
 
-`Qwen/Qwen-Image-Edit-2509` is the model that answers "is it really me?" — it keeps facial identity across poses and accepts up to 3 reference images per person. It is also much heavier than FLUX.
+`Qwen/Qwen-Image-2.1-Turbo` is the default and edits straight from reference photos (up to 3 per person). If you want the checkpoint that is *documented* to lock a face across poses, use `Qwen/Qwen-Image-Edit-2509`:
 
 ```python
 %env PLUSONE_MODEL=Qwen/Qwen-Image-Edit-2509
@@ -634,9 +646,9 @@ The first run downloads several gigabytes of weights (roughly 2.6–20 GB depend
 
 Notes:
 
-- the adapter puts the pipeline in fp16 and enables **CPU offload** automatically on a T4, because the weights exceed VRAM;
-- expect several minutes per image on a free T4, and possible out-of-memory on a small runtime. If it OOMs, switch to a high-RAM GPU runtime, or set `WIDTH = HEIGHT = 512` at the top of the script while testing;
-- the model is ungated (no token, no licence) but large; the download alone takes a while.
+- both checkpoints run in `float16` with CPU offload on a T4, because the weights exceed VRAM;
+- expect a few minutes per image on a free T4. If it OOMs, switch to a high-RAM GPU runtime, or set `WIDTH = HEIGHT = 512` at the top of the script while testing;
+- both are ungated (no token, no licence) but large; the download alone takes a while.
 
 ### 6. Reference photos (the whole point of the identity path)
 
@@ -710,13 +722,16 @@ p.write_text(text)
 
 | Symptom | Cause / fix |
 | --- | --- |
-| `ModuleNotFoundError: pigamagic_agent` | run from `backend/` **with** `PYTHONPATH=.`, or use `%run` |
+| `ModuleNotFoundError: pigamagic_agent` | you are on an old copy: the script now adds `backend/` to `sys.path` itself, so `%run scripts/colab_smoke.py` works from any directory |
+| `RuntimeError: asyncio.run() cannot be called from a running event loop` | you used `%run` in an old copy of the script: it now reuses the kernel's loop (needs `nest_asyncio`, preinstalled in Colab), or runs itself in a subprocess. `!python scripts/colab_smoke.py` never hits this. |
 | `torch is missing` | runtime reverted to CPU or the session reset — reinstall `diffusers transformers accelerate safetensors` |
+| `QwenImage21Pipeline` missing / `cannot import name 'QwenImage21Pipeline'` | Qwen-Image-2.1 needs diffusers `main`: `!pip install -q git+https://github.com/huggingface/diffusers.git "transformers>=5.17"`, then restart the runtime |
+| `bfloat16 is only supported on GPUs with compute capability >= 8.0` | a T4 is sm_75; the adapter warns and falls back to `float16` automatically — use an L4/A100 runtime to keep bf16 |
 | No GPU detected | **Runtime → Change runtime type → T4 GPU**, then reconnect |
 | Out-of-memory or the kernel dies on Qwen | a free T4 has 16 GB; use a high-RAM runtime, lower `WIDTH`/`HEIGHT`, or render fewer shots |
 | `401` on a Hugging Face model | the token is wrong, expired or has no read scope: create a new one at https://huggingface.co/settings/tokens and set it as `AGENT_IMAGE_API_KEY` |
 | `403` / "is gated" on any FLUX model (including `FLUX.1-schnell`, gated since 2026) | accept the licence on the model page, then supply an HF token as `AGENT_IMAGE_API_KEY`; or switch to an ungated checkpoint: `Qwen/Qwen-Image-Edit-2509`, `Qwen/Qwen-Image` or `stabilityai/sdxl-turbo` |
-| Generated faces do not match the references | you are on a text-to-image model, or `REFERENCE_PATHS` is empty; use `Qwen/Qwen-Image-Edit-2509` |
+| Generated faces do not match the references | you are on a text-to-image model, or `REFERENCE_PATHS` is empty; use the default `Qwen/Qwen-Image-2.1-Turbo` or `Qwen/Qwen-Image-Edit-2509` |
 | Session disconnects mid-run | free runtimes expire; render fewer shots per run and save to Drive |
 
 ---

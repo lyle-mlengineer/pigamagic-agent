@@ -406,16 +406,22 @@ Built from your `black_forest.py` sample, verified against `docs.api.nvidia.com`
 
 Runs real open weights on a free Colab T4. A `MODEL_SPECS` table encodes each family's true parameters, because guessing them produces mush:
 
-- **`Qwen/Qwen-Image-Edit-2509`** — documented to *preserve facial identity across poses*, up to 3 reference images, ungated. This is the model that answers "is it really me?"
-- **`FLUX.1-schnell`** — 4 steps, fastest, the default; **gated by Hugging Face in 2026**, so it now needs a licence click plus a free `HF_TOKEN`
-- **`stabilityai/sdxl-turbo`** — ungated, ~2.6 GB, 2 steps: the zero-setup smoke test
+- **`Qwen/Qwen-Image-2.1-Turbo`** — **the default**: ungated, 8 steps, text-to-image and editing from reference photos (up to 3 per person)
+- **`Qwen/Qwen-Image-Edit-2509`** — documented to *preserve facial identity across poses*, up to 3 reference images, ungated
+- **`FLUX.1-schnell`** — 4 steps, fastest text-to-image; **gated by Hugging Face in 2026**, so it needs a licence click plus a free `HF_TOKEN`
+- **`stabilityai/sdxl-turbo`** — ungated, ~2.6 GB, 2 steps: the quick plumbing check
 - FLUX.1-dev / Kontext-dev / SD3.5 — gated too, need an `HF_TOKEN`
 
 Gating is a moving target, so `UNGATED_MODELS` is the list of what still needs no account, `preflight()` refuses a gated checkpoint *before* the download instead of after it, and `gated_help()` produces one message that names the licence URL, the token page and a genuinely ungated alternative (the old message told `FLUX.1-schnell` users to switch to `FLUX.1-schnell`).
 
-Two API traps handled explicitly:
+Three API traps handled explicitly:
 1. **Qwen ignores `guidance_scale`.** Real guidance is `true_cfg_scale`, and CFG only activates with a `negative_prompt`. Passing `guidance_scale` does nothing.
-2. **schnell is timestep-distilled**: requires `guidance_scale=0.0` and `max_sequence_length<=256`.
+2. **`QwenImage21Pipeline` has no `guidance_scale` or `max_sequence_length` at all** — it rejects them, samples guidance-free (`true_cfg_scale=1.0`), takes a *list* of condition images, and ships its own 8-step sigma schedule so `num_inference_steps` is ignored. Negative prompts are folded into the positive prompt because there is no CFG to feed them to.
+3. **schnell is timestep-distilled**: requires `guidance_scale=0.0` and `max_sequence_length<=256`.
+
+A spec can also declare its `dtype` and `offload` mode: Qwen-Image-2.1 asks for `bfloat16` and **sequential** CPU offload, because its 17.5 GB text encoder plus 14 GB transformer cannot share a 16 GB T4. A T4 is sm_75 and cannot run bf16, so `load()` warns and falls back to `float16`.
+
+The Colab entry point now survives both invocation styles: `!python scripts/colab_smoke.py` takes `asyncio.run()`, while `%run scripts/colab_smoke.py` reuses the Jupyter kernel's loop via `nest_asyncio` (or re-executes itself in a subprocess when that package is absent) — the 2026 `RuntimeError: asyncio.run() cannot be called from a running event loop`.
 
 Dependencies are imported lazily, so `pytest` needs no torch/diffusers.
 

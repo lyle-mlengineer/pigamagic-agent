@@ -122,8 +122,13 @@ _IMAGE_REGISTRY: dict[str, Callable[..., ImageProvider]] = {
 }
 
 
-def describe_image_providers() -> list[dict[str, Any]]:
-    """Capability summary, for the CLI and for choosing a provider before paying."""
+def describe_image_providers(settings: AgentSettings | None = None) -> list[dict[str, Any]]:
+    """Capability summary, for the CLI and for choosing a provider before paying.
+
+    `settings` is honoured rather than re-read from the environment, so a caller
+    that passes its own model gets a truthful row for it.
+    """
+    active = settings or get_settings()
     rows: list[dict[str, Any]] = []
     for name in available_image_providers():
         if name == "fixture":
@@ -141,7 +146,7 @@ def describe_image_providers() -> list[dict[str, Any]]:
         if name == "huggingface":
             from pigamagic_agent.agent.providers.image_huggingface import DEFAULT_MODEL, resolve_spec
 
-            model = get_settings().image_model or DEFAULT_MODEL
+            model = active.image_model or DEFAULT_MODEL
             spec = resolve_spec(model)
             rows.append(
                 {

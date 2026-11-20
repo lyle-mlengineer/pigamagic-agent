@@ -1,23 +1,24 @@
 # PlusOne — Colab smoke test for local Hugging Face image models
 #
 # Paste this into a Colab notebook (GPU runtime) to generate REAL photos from a
-# golden brief using open-weight models. No API key needed: with no HF_TOKEN the
-# script runs the ungated sdxl-turbo; set HF_TOKEN to get FLUX.1-schnell.
+# golden brief using open-weight models. No API key and no licence click: the
+# default checkpoint is ungated. ~32 GB of weights, so allow for the download.
 #
 # Runtime > Change runtime type > T4 GPU
 #
-# Cell 1: install
-#   !pip install -q diffusers transformers accelerate safetensors
+# Cell 1: install (Qwen-Image-2.1 needs diffusers main and transformers>=5.17)
+#   !pip install -q git+https://github.com/huggingface/diffusers.git "transformers>=5.17" accelerate safetensors
 #
 # Cell 2: clone/upload this repo, then run this file.
 #
 # ── Which model to use ──────────────────────────────────────────────────────
-#   sdxl-turbo            ungated, ~2.6 GB, 2 steps. Zero-setup default.
-#   Qwen-Image-Edit-2509  ungated, PRESERVES FACIAL IDENTITY from references.
-#                         This is the one that answers "is it really me?".
-#   FLUX.1-schnell        4 steps, fastest — but gated since 2026: accept the
-#                         licence on its HF page and set HF_TOKEN, then pass
-#                         PLUSONE_MODEL=black-forest-labs/FLUX.1-schnell.
+#   Qwen-Image-2.1-Turbo  ungated, 8 steps, text-to-image AND editing from
+#                         reference photos. The default.
+#   Qwen-Image-Edit-2509  ungated, documented facial-identity retention.
+#   sdxl-turbo            ungated, ~2.6 GB, 2 steps: the 2-minute plumbing check.
+#   FLUX.1-schnell        4 steps, fastest text-to-image — but gated since 2026:
+#                         accept the licence on its HF page, set HF_TOKEN, and
+#                         pass PLUSONE_MODEL=black-forest-labs/FLUX.1-schnell.
 #   FLUX.1-dev / Kontext  gated too: licence click plus HF_TOKEN.
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,13 @@ import os
 import sys
 import time
 
+# Make the package importable from any working directory: running a file inside
+# scripts/ otherwise puts *that* folder on sys.path, not backend/, and the
+# support for PLUSONE_MODEL/PATH then fails with ModuleNotFoundError.
+_BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND not in sys.path:
+    sys.path.insert(0, _BACKEND)
+
 # --- configuration ---------------------------------------------------------
 
 # Gated models need a Hugging Face token: https://huggingface.co/settings/tokens
@@ -35,22 +43,19 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 
 def pick_model() -> str:
-    """Choose a checkpoint that can actually download in this runtime.
+    """The checkpoint to load, honouring PLUSONE_MODEL.
 
-    `FLUX.1-schnell` is the fastest thing here but Hugging Face gated it, so it
-    needs both a licence click and `HF_TOKEN`. With no token the script starts
-    on an ungated checkpoint instead of dying on a 403 after a long download.
+    The default is ungated, so a fresh Colab needs no account at all. Gated
+    checkpoints still work, but only with a licence click and `HF_TOKEN` — the
+    provider's preflight explains that before anything downloads.
     """
     chosen = os.environ.get("PLUSONE_MODEL", "").strip()
     if chosen:
         return chosen
-    if HF_TOKEN:
-        return "black-forest-labs/FLUX.1-schnell"
 
-    from pigamagic_agent.agent.providers.image_huggingface import QUICK_TEST_MODEL
+    from pigamagic_agent.agent.providers.image_huggingface import DEFAULT_MODEL
 
-    return QUICK_TEST_MODEL
-
+    return DEFAULT_MODEL
 
 MODEL = pick_model()
 
@@ -69,7 +74,11 @@ def check_environment() -> None:
     try:
         import torch
     except ImportError:
-        sys.exit("torch is missing. Run: !pip install -q diffusers transformers accelerate safetensors")
+        sys.exit(
+            "torch is missing. Run:\n"
+            "  !pip install -q git+https://github.com/huggingface/diffusers.git "
+            "'transformers>=5.17' accelerate safetensors"
+        )
 
     if not torch.cuda.is_available():
         print("WARNING: no GPU detected. Generation will be very slow on CPU.")
@@ -83,7 +92,20 @@ def check_environment() -> None:
     except ImportError:
         sys.exit(
             "diffusers is missing. Run:\n"
-            "  !pip install -q diffusers transformers accelerate safetensors"
+            "  !pip install -q git+https://github.com/huggingface/diffusers.git "
+            "'transformers>=5.17' accelerate safetensors"
+        )
+
+    # Qwen-Image-2.1 ships a QwenImage21Pipeline class that only exists in
+    # diffusers main (PR #14950), so an older release build loads nothing.
+    if MODEL.startswith("Qwen/Qwen-Image-2.1") and not hasattr(
+        diffusers, "QwenImage21Pipeline"
+    ):
+        sys.exit(
+            f"{MODEL} needs diffusers with QwenImage21Pipeline. Run:\n"
+            "  !pip install -q git+https://github.com/huggingface/diffusers.git "
+            "'transformers>=5.17'\n"
+            "then restart the runtime."
         )
 
     # Gating is the one failure that costs a download first, so check it here.
@@ -120,7 +142,7 @@ async def main() -> int:
     )
 
     print("\n=== available image providers ===")
-    for row in describe_image_providers():
+    for row in describe_image_providers(settings):
         flag = "identity" if row["identity_refs"] else "text-only"
         print(f"  {row['name']:<12} {flag:<10} refs={row['max_refs']:<3} {row['note'][:52]}")
 
@@ -199,6 +221,37 @@ async def main() -> int:
     return 0
 
 
+def run() -> int:
+    """Run `main()` whether or not a loop is already running.
+
+    `%run scripts/colab_smoke.py` executes this file inside the Colab kernel,
+    which already has a running asyncio loop, and `asyncio.run()` refuses to
+    start a second one. `!python scripts/colab_smoke.py` is a separate process,
+    so it takes the plain path. Both must work: the notebook is where this
+    script is actually used.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(main())  # normal script: no loop yet
+
+    # A loop is already running (Jupyter/IPython). nest_asyncio ships with Colab
+    # and makes run_until_complete reentrant; if it is missing, re-exec ourselves
+    # in a subprocess rather than failing with a confusing RuntimeError.
+    try:
+        import nest_asyncio  # noqa: PLC0415
+
+        nest_asyncio.apply()
+        return asyncio.get_event_loop().run_until_complete(main())
+    except ImportError:
+        import subprocess  # noqa: PLC0415
+
+        print("nest_asyncio is not installed; re-running in a subprocess.")
+        return subprocess.call(
+            [sys.executable, os.path.abspath(__file__)], env=dict(os.environ)
+        )
+
+
 if __name__ == "__main__":
     check_environment()
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(run())
